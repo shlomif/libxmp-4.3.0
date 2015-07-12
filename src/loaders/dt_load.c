@@ -1,9 +1,23 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
- * This file is part of the Extended Module Player and is distributed
- * under the terms of the GNU Lesser General Public License. See COPYING.LIB
- * for more information.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 #include <assert.h>
@@ -77,8 +91,19 @@ static int get_s_q_(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 	struct xmp_module *mod = &m->mod;
 	int i, maxpat;
 
+	/* Sanity check */
+	if (mod->pat != 0) {
+		return -1;
+	}
+
 	mod->len = hio_read16b(f);
 	mod->rst = hio_read16b(f);
+
+	/* Sanity check */
+	if (mod->len > 256 || mod->rst > 255) {
+		return -1;
+	}
+
 	hio_read32b(f);	/* reserved */
 
 	for (maxpat = i = 0; i < 128; i++) {
@@ -188,8 +213,16 @@ static int get_dapt(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 	}
 
 	hio_read32b(f);	/* 0xffffffff */
-	i = pat = hio_read16b(f);
+	pat = hio_read16b(f);
 	rows = hio_read16b(f);
+
+	/* Sanity check */
+	if (pat < 0 || pat >= mod->pat || rows < 0 || rows > 256) {
+		return -1;
+	}
+	if (pat < data->last_pat) {
+		return -1;
+	}
 
 	for (i = data->last_pat; i <= pat; i++) {
 		if (pattern_tracks_alloc(mod, i, rows) < 0)
@@ -232,6 +265,11 @@ static int get_dait(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 	}
 
 	if (size > 2) {
+		/* Sanity check */
+		if (data->insnum >= mod->ins) {
+			return -1;
+		}
+
 		int ret = load_sample(m, f, SAMPLE_FLAG_BIGEND,
 			&mod->xxs[mod->xxi[data->insnum].sub[0].sid], NULL);
 
@@ -248,11 +286,12 @@ static int dt_load(struct module_data *m, HIO_HANDLE *f, const int start)
 {
 	iff_handle handle;
 	struct local_data data;
+	struct xmp_module *mod = &m->mod;
 	int ret, i;
 
 	LOAD_INIT();
 
-	data.pflag = data.sflag = 0;
+	memset(&data, 0, sizeof (struct local_data));
 	
 	handle = iff_new();
 	if (handle == NULL)
@@ -275,10 +314,13 @@ static int dt_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	if (ret < 0)
 		return -1;
 
-	//fix rest patterns
-	for (i = data.last_pat; i < m->mod.pat; i++) {
-		if (pattern_tracks_alloc(&m->mod, i, 64) < 0)
-			return -1;
+	/* alloc remaining patterns */
+	if (mod->xxp != NULL) {
+		for (i = data.last_pat; i < mod->pat; i++) {
+			if (pattern_tracks_alloc(mod, i, 64) < 0) {
+				return -1;
+			}
+		}
 	}
 
 	return 0;

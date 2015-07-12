@@ -1,5 +1,5 @@
-/* Extended Module Player core player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -42,7 +42,7 @@
 #define LINEAR_INTERP() do { \
     smp_l1 = sptr[pos]; \
     smp_dt = sptr[pos + 1] - smp_l1; \
-    smp_in = smp_l1 + ((frac * smp_dt) >> SMIX_SHIFT); \
+    smp_in = smp_l1 + (((frac >> 1) * smp_dt) >> (SMIX_SHIFT - 1)); \
 } while (0)
 
 

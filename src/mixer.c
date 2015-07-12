@@ -1,5 +1,5 @@
-/* Extended Module Player core player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -27,6 +27,7 @@
 #include "virtual.h"
 #include "mixer.h"
 #include "period.h"
+#include "player.h"	/* for set_sample_end() */
 
 #ifndef LIBXMP_CORE_PLAYER
 #include "synth.h"
@@ -80,7 +81,6 @@ MIX_FN(smix_stereo_16bit_spline_filter);
  * bit 2: 0=unfiltered, 1=filtered
  */
 
-// typedef void (*mixer_set[])();
 typedef void (*mixer_set[])(struct mixer_voice *, int *, int, int, int, int);
 
 static mixer_set nearest_mixers = {
@@ -301,6 +301,27 @@ static void anticlick(struct context_data *ctx, int voc, int vol, int pan,
 	}
 }
 
+static void set_sample_end(struct context_data *ctx, int voc, int end)
+{
+	struct player_data *p = &ctx->p;
+	struct module_data *m = &ctx->m;
+	struct mixer_voice *vi = &p->virt.voice_array[voc];
+	struct channel_data *xc;
+
+	if ((uint32)voc >= p->virt.maxvoc)
+		return;
+
+	xc = &p->xc_data[vi->chn];
+
+	if (end) {
+		SET_NOTE(NOTE_SAMPLE_END);
+		if (HAS_QUIRK(QUIRK_RSTCHN)) {
+			virt_resetvoice(ctx, voc, 0);
+		}
+	} else {
+		RESET_NOTE(NOTE_SAMPLE_END);
+	}
+}
 
 /* Fill the output buffer calling one of the handlers. The buffer contains
  * sound for one tick (a PAL frame or 1/50s for standard vblank-timed mods)
@@ -356,8 +377,13 @@ void mixer_softmixer(struct context_data *ctx)
 		vi->pos0 = vi->pos;
 
 		buf_pos = s->buf32;
-		vol_r = vi->vol * (0x80 - vi->pan);
-		vol_l = vi->vol * (0x80 + vi->pan);
+		if (vi->pan == PAN_SURROUND) {
+			vol_r = vi->vol * 0x80;
+			vol_l = -vi->vol * 0x80;
+		} else {
+			vol_r = vi->vol * (0x80 - vi->pan);
+			vol_l = vi->vol * (0x80 + vi->pan);
+		}
 
 #ifndef LIBXMP_CORE_PLAYER
 		if (vi->fidx & FLAG_SYNTH) {
@@ -377,10 +403,11 @@ void mixer_softmixer(struct context_data *ctx)
 			continue;
 		}
 
-		if (vi->smp < mod->smp)
+		if (vi->smp < mod->smp) {
 			xxs = &mod->xxs[vi->smp];
-		else
+		} else {
 			xxs = &ctx->smix.xxs[vi->smp - mod->smp];
+		}
 
 		lps = xxs->lps;
 		lpe = xxs->lpe;
@@ -390,18 +417,25 @@ void mixer_softmixer(struct context_data *ctx)
 		}
 
 		for (size = s->ticksize; size > 0; ) {
+			int split_noloop = 0;
+
+			if (p->xc_data[vi->chn].split) {
+				split_noloop = 1;
+			}
+
 			/* How many samples we can write before the loop break
 			 * or sample end... */
 			if (vi->pos >= vi->end) {
 				samples = 0;
 			} else {
-				samples = 1 + (((int64)(vi->end - vi->pos) <<
+				int64 s = 1 + (((int64)(vi->end - vi->pos) <<
 					SMIX_SHIFT) - vi->frac) / step;
-			}
+				/* ...inside the tick boundaries */
+				if (s > size) {
+					s = size;
+				}
 
-			/* ...inside the tick boundaries */
-			if (samples > size) {
-				samples = size;
+				samples = s;
 			}
 
 			if (vi->vol) {
@@ -423,26 +457,26 @@ void mixer_softmixer(struct context_data *ctx)
 				}
 
 #ifndef LIBXMP_CORE_DISABLE_IT
-				/* "Beautiful Ones" apparently uses 0xfe as
-				 * 'no filter' :\ */
-				if (vi->filter.cutoff >= 0xfe)
+				/* See OpenMPT env-flt-max.it */
+				if (vi->filter.cutoff >= 0xfe &&
+                                    vi->filter.resonance == 0) {
 					mixer &= ~FLAG_FILTER;
+				}
 #endif
 
 				mix_fn = (*mixers)[mixer];
 
 				/* Call the output handler */
-				if (samples >= 0) {
+				if (samples >= 0 && vi->sptr != NULL) {
 					mix_fn(vi, buf_pos, samples, vol_l,
 								vol_r, step);
 					buf_pos += mix_size;
-				}
 
-				/* For Hipolito's anticlick routine */
-				idx = 0;
-				if (mix_size >= 2) {
-					vi->sright = buf_pos[idx - 2] - prev_r;
-					vi->sleft = buf_pos[idx - 1] - prev_l;
+					/* For Hipolito's anticlick routine */
+					if (mix_size >= 2) {
+						vi->sright = buf_pos[-2] - prev_r;
+						vi->sleft = buf_pos[-1] - prev_l;
+					}
 				}
 			}
 
@@ -456,9 +490,9 @@ void mixer_softmixer(struct context_data *ctx)
 				continue;
 
 			/* First sample loop run */
-			if (~xxs->flg & XMP_SAMPLE_LOOP) {
+			if ((~xxs->flg & XMP_SAMPLE_LOOP) || split_noloop) {
 				anticlick(ctx, voc, 0, 0, buf_pos, size);
-				virt_resetvoice(ctx, voc, 0);
+				set_sample_end(ctx, voc, 1);
 				size = 0;
 				continue;
 			}
@@ -524,8 +558,12 @@ void mixer_voicepos(struct context_data *ctx, int voc, int pos, int frac)
 		vi->end = xxs->len;
 	}
 
-	if (pos >= vi->end) {		/* Happens often in MED synth */
-		pos = 0;
+	if (pos >= vi->end) {
+		if (xxs->flg & XMP_SAMPLE_LOOP) {
+			pos = xxs->lps;
+		} else {
+			pos = xxs->len;
+		}
 	}
 
 	vi->pos = pos;
@@ -587,6 +625,8 @@ void mixer_setpatch(struct context_data *ctx, int voc, int smp)
 		vi->fidx |= FLAG_STEREO;
 	}
 
+	set_sample_end(ctx, voc, 0);
+
 #ifndef LIBXMP_CORE_PLAYER
 	if (xxs->flg & XMP_SAMPLE_SYNTH) {
 		vi->fidx |= FLAG_SYNTH;
@@ -617,6 +657,13 @@ void mixer_setnote(struct context_data *ctx, int voc, int note)
 {
 	struct player_data *p = &ctx->p;
 	struct mixer_voice *vi = &p->virt.voice_array[voc];
+
+	/* FIXME: Workaround for crash on notes that are too high
+	 *        see 6nations.it (+114 transposition on instrument 16)
+	 */
+	if (note > 149) {
+		note = 149;
+	}
 
 	vi->note = note;
 	vi->period = note_to_period_mix(note, 0);

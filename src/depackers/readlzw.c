@@ -84,7 +84,10 @@ data->quirk = q;
 data->global_use_rle=use_rle;
 data->maxstr=(1<<max_bits);
 
-if((data_out=malloc(orig_len))==NULL) {
+if (data->maxstr > REALMAXSTR)
+  return NULL;
+
+if((data_out=calloc(1, orig_len))==NULL) {
   //fprintf(stderr,"nomarch: out of memory!\n");
   return NULL;
 }
@@ -121,7 +124,7 @@ while(1)
   if(!readcode(&newcode,csize,data)) {
 //printf("readcode failed!\n");
     break;
-}
+  }
 //printf("newcode = %x\n", newcode);
 
   if (data->quirk & NOMARCH_QUIRK_END101) {
@@ -220,14 +223,29 @@ unsigned char *convert_lzw_dynamic(unsigned char *data_in,
 	unsigned char *d;
 
 	if ((data = malloc(sizeof (struct local_data))) == NULL) {
-		return NULL;
+		goto err;
 	}
 
 	d = _convert_lzw_dynamic(data_in, max_bits, use_rle, in_len,
 						orig_len, q, data);
 
+	/* Sanity check */
+	if (d == NULL) {
+		goto err2;
+	}
+	if (d + orig_len != data->io.data_out_point) {
+		free(d);
+		goto err2;
+	}
+
 	free(data);
+
 	return d;
+
+    err2:
+	free(data);
+    err:
+	return NULL;
 }
 
 unsigned char *read_lzw_dynamic(FILE *f, uint8 *buf, int max_bits,int use_rle,

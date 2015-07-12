@@ -1,5 +1,5 @@
-/* Extended Module Player core player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -78,6 +78,13 @@ const struct module_quirk mq[] = {
 		XMP_FLAGS_VBLANK
 	},
 
+	/* Another version of Klisje paa klisje sent by Steve Fernandez */
+	{
+		{ 0x12, 0x19, 0x1c, 0x90, 0x41, 0xe3, 0xfd, 0x70,
+		  0xb7, 0xe6, 0xb3, 0x94, 0x8b, 0x21, 0x07, 0x63 },
+		XMP_FLAGS_VBLANK
+	},
+
 	{
 		{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 		  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
@@ -128,39 +135,6 @@ int exclude_match(char *name)
 	return 0;
 }
 
-int get_temp_dir(char *buf, int size)
-{
-#if defined WIN32
-	const char def[] = "C:\\WINDOWS\\TEMP";
-	char *tmp = getenv("TEMP");
-
-	strncpy(buf, tmp ? tmp : def, size);
-	strncat(buf, "\\", size);
-#elif defined __AMIGA__
-	strncpy(buf, "T:", size);
-#elif defined ANDROID
-#define APPDIR "/sdcard/Xmp for Android"
-	struct stat st;
-	if (stat(APPDIR, &st) < 0) {
-		if (mkdir(APPDIR, 0777) < 0)
-			return -1;
-	}
-	if (stat(APPDIR "/tmp", &st) < 0) {
-		if (mkdir(APPDIR "/tmp", 0777) < 0)
-			return -1;
-	}
-	strncpy(buf, APPDIR "/tmp/", size);
-#else
-	const char def[] = "/tmp";
-	char *tmp = getenv("TMPDIR");
-
-	strncpy(buf, tmp ? tmp : def, size);
-	strncat(buf, "/", size);
-#endif
-
-	return 0;
-}
-
 #endif /* LIBXMP_CORE_PLAYER */
 
 char *adjust_string(char *s)
@@ -179,8 +153,20 @@ char *adjust_string(char *s)
 
 static void check_envelope(struct xmp_envelope *env)
 {
-	if (env->npt <= 0 || env->lps >= env->npt || env->lpe >= env->npt)
+	/* Disable envelope if invalid number of points */
+	if (env->npt <= 0 || env->npt > XMP_MAX_ENV_POINTS) {
+		env->flg &= ~XMP_ENVELOPE_ON;
+	}
+
+	/* Disable envelope loop if invalid loop parameters */
+	if (env->lps >= env->npt || env->lpe >= env->npt) {
 		env->flg &= ~XMP_ENVELOPE_LOOP;
+	}
+
+	/* Disable envelope loop if invalid sustain */
+	if (env->sus >= env->npt) {
+		env->flg &= ~XMP_ENVELOPE_ON;
+	}
 }
 
 void load_prologue(struct context_data *ctx)
@@ -189,12 +175,11 @@ void load_prologue(struct context_data *ctx)
 	int i;
 
 	/* Reset variables */
-	memset(m->mod.name, 0, XMP_NAME_SIZE);
-	memset(m->mod.type, 0, XMP_NAME_SIZE);
+	memset(&m->mod, 0, sizeof (struct xmp_module));
 	m->rrate = PAL_RATE;
 	m->c4rate = C4_PAL_RATE;
 	m->volbase = 0x40;
-	m->gvolbase = 0x40;
+	m->gvol = m->gvolbase = 0x40;
 	m->vol_table = NULL;
 	m->quirk = 0;
 	m->read_event_type = READ_EVENT_MOD;
@@ -233,7 +218,14 @@ void load_epilogue(struct context_data *ctx)
 	struct xmp_module *mod = &m->mod;
 	int i, j;
 
-    	mod->gvl = m->gvolbase;
+    	mod->gvl = m->gvol;
+
+	/* Sanity check for module parameters */
+	CLAMP(mod->len, 0, XMP_MAX_MOD_LENGTH);
+	CLAMP(mod->pat, 0, 256);
+	CLAMP(mod->ins, 0, 255);
+	CLAMP(mod->smp, 0, MAX_SAMPLES);
+	CLAMP(mod->chn, 0, XMP_MAX_CHANNELS);
 
 	/* Fix cases where the restart value is invalid e.g. kc_fall8.xm
 	 * from http://aminet.net/mods/mvp/mvp_0002.lha (reported by
@@ -243,13 +235,11 @@ void load_epilogue(struct context_data *ctx)
 		mod->rst = 0;
 	}
 
-	/* Sanity check */
-	if (mod->spd == 0) {
+	/* Sanity check for tempo and BPM */
+	if (mod->spd <= 0 || mod->spd > 255) {
 		mod->spd = 6;
 	}
-	if (mod->bpm == 0) {
-		mod->bpm = 125;
-	}
+	CLAMP(mod->bpm, XMP_MIN_BPM, 255);
 
 	/* Set appropriate values for instrument volumes and subinstrument
 	 * global volumes when QUIRK_INSVOL is not set, to keep volume values
@@ -287,7 +277,7 @@ int prepare_scan(struct context_data *ctx)
 	struct xmp_module *mod = &m->mod;
 	int i, ord;
 
-	if (mod->xxo == NULL || mod->xxp == NULL || mod->xxt == NULL)
+	if (mod->xxp == NULL || mod->xxt == NULL)
 		return -XMP_ERROR_LOAD;
 	ord = 0;
 	while (ord < mod->len && mod->xxo[ord] >= mod->pat) {

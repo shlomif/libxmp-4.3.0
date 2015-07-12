@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "common.h"
+#include "depacker.h"
 
 #define LZHUFF0_METHOD          0x2D6C6830      /* -lh0- */
 #define LZHUFF1_METHOD          0x2D6C6831      /* -lh1- */
@@ -207,7 +208,7 @@ static void init_getbits(struct LhADecrData *dat)
 
 /* ------------------------------------------------------------------------ */
 
-static void make_table(struct LhADecrData *dat, int16 nchar, uint8 bitlen[], int16 tablebits, uint16 table[])
+static int make_table(struct LhADecrData *dat, int16 nchar, uint8 bitlen[], int16 tablebits, uint16 table[], int table_size)
 {
   uint16 count[17];  /* count of bitlen */
   uint16 weight[17]; /* 0x10000ul >> bitlen */
@@ -242,7 +243,7 @@ static void make_table(struct LhADecrData *dat, int16 nchar, uint8 bitlen[], int
   if(total & 0xFFFF)
   {
     dat->error = 1;
-    return;
+    return -1;
   }
 
   /* shift data for make table. */
@@ -255,9 +256,16 @@ static void make_table(struct LhADecrData *dat, int16 nchar, uint8 bitlen[], int
   /* initialize */
   j = start[tablebits + 1] >> m;
   k = 1 << tablebits;
-  if(j != 0)
+  if(j != 0) {
+
+    /* Sanity check */
+    if (k > table_size) {
+      return -1;
+    }
+
     for(i = j; i < k; i++)
       table[i] = 0;
+  }
 
   /* create table and tree */
   for(j = 0; j < nchar; j++)
@@ -266,8 +274,14 @@ static void make_table(struct LhADecrData *dat, int16 nchar, uint8 bitlen[], int
     if(k == 0)
       continue;
     l = start[k] + weight[k];
+
     if(k <= tablebits)
     {
+      /* Sanity check */
+      if (l > table_size) {
+        return -1;
+      }
+
       /* code in table */
       for(i = start[k]; i < l; i++)
         table[i] = j;
@@ -297,12 +311,12 @@ static void make_table(struct LhADecrData *dat, int16 nchar, uint8 bitlen[], int
     start[k] = l;
   }
   
-  return;
+  return 0;
 }
 
 /* ------------------------------------------------------------------------ */
 
-static void read_pt_len(struct LhADecrData *dat, int16 nn, int16 nbit, int16 i_special)
+static int read_pt_len(struct LhADecrData *dat, int16 nn, int16 nbit, int16 i_special)
 {
   int16 i, c, n;
 
@@ -342,11 +356,14 @@ static void read_pt_len(struct LhADecrData *dat, int16 nn, int16 nbit, int16 i_s
     }
     while(i < nn)
       dat->d.st.pt_len[i++] = 0;
-    make_table(dat, nn, dat->d.st.pt_len, 8, dat->d.st.pt_table);
+    if (make_table(dat, nn, dat->d.st.pt_len, 8, dat->d.st.pt_table, 256) < 0)
+      return -1;
   }
+
+  return 0;
 }
 
-static void read_c_len(struct LhADecrData *dat)
+static int read_c_len(struct LhADecrData *dat)
 {
   int16 i, c, n;
 
@@ -387,6 +404,11 @@ static void read_c_len(struct LhADecrData *dat)
           c = getbits(dat, 4) + 3;
         else
           c = getbits(dat, CBIT) + 20;
+
+	/* Sanity check */
+	if (i + c >= NC)
+	  return -1;
+
         while(--c >= 0)
           dat->d.st.c_len[i++] = 0;
       }
@@ -395,20 +417,26 @@ static void read_c_len(struct LhADecrData *dat)
     }
     while(i < NC)
       dat->d.st.c_len[i++] = 0;
-    make_table(dat, NC, dat->d.st.c_len, 12, dat->d.st.c_table);
+    if (make_table(dat, NC, dat->d.st.c_len, 12, dat->d.st.c_table, 4096) < 0)
+      return -1;
   }
+
+  return 0;
 }
 
-static uint16 decode_c_st1(struct LhADecrData *dat)
+static int decode_c_st1(struct LhADecrData *dat)
 {
   uint16 j, mask;
 
   if(!dat->d.st.blocksize)
   {
     dat->d.st.blocksize = getbits(dat, 16);
-    read_pt_len(dat, NT, TBIT, 3);
-    read_c_len(dat);
-    read_pt_len(dat, dat->d.st.np, dat->d.st.pbit, -1);
+    if (read_pt_len(dat, NT, TBIT, 3) < 0)
+      return -1;
+    if (read_c_len(dat) < 0)
+      return -1;
+    if (read_pt_len(dat, dat->d.st.np, dat->d.st.pbit, -1) < 0)
+      return -1;
   }
   dat->d.st.blocksize--;
   j = dat->d.st.c_table[dat->bitbuf >> 4];
@@ -457,7 +485,7 @@ static uint16 decode_p_st1(struct LhADecrData *dat)
   return j;
 }
 
-static void decode_start_st1(struct LhADecrData *dat)
+static int decode_start_st1(struct LhADecrData *dat)
 {
   if(dat->DicBit <= 13)
   {
@@ -474,6 +502,8 @@ static void decode_start_st1(struct LhADecrData *dat)
   }
   init_getbits(dat);
 //  dat->d.st.blocksize = 0; /* done automatically */
+
+  return 0;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -713,7 +743,7 @@ static void update_c(struct LhADecrData *dat, int32 p)
   } while(q != ROOT_C);
 }
 
-static uint16 decode_c_dyn(struct LhADecrData *dat)
+static int decode_c_dyn(struct LhADecrData *dat)
 {
   int32 c;
   int16 buf, cnt;
@@ -807,7 +837,7 @@ static void ready_made(struct LhADecrData *dat, int32 method)
   }
 }
 
-static void decode_start_fix(struct LhADecrData *dat)
+static int decode_start_fix(struct LhADecrData *dat)
 {
   dat->d.st.n_max = 314;
   dat->d.st.maxmatch = 60;
@@ -815,7 +845,10 @@ static void decode_start_fix(struct LhADecrData *dat)
   dat->d.st.np = 1 << (12 - 6);
   start_c_dyn(dat);
   ready_made(dat, 0);
-  make_table(dat, dat->d.st.np, dat->d.st.pt_len, 8, dat->d.st.pt_table);
+  if (make_table(dat, dat->d.st.np, dat->d.st.pt_len, 8, dat->d.st.pt_table, 256) < 0)
+    return -1;
+
+  return 0;
 }
 
 static uint16 decode_p_st0(struct LhADecrData *dat)
@@ -854,7 +887,7 @@ static void decode_start_st0(struct LhADecrData *dat)
   dat->d.st.np = 1 << (MAX_DICBIT - 6);
 }
 
-static void read_tree_c(struct LhADecrData *dat) /* read tree from file */
+static int read_tree_c(struct LhADecrData *dat) /* read tree from file */
 {
   int32 i, c;
 
@@ -871,10 +904,13 @@ static void read_tree_c(struct LhADecrData *dat) /* read tree from file */
       memset(dat->d.st.c_len, 0, N1);
       for(i = 0; i < 4096; i++)
         dat->d.st.c_table[i] = c;
-      return;
+      return 0;
     }
   }
-  make_table(dat, N1, dat->d.st.c_len, 12, dat->d.st.c_table);
+  if (make_table(dat, N1, dat->d.st.c_len, 12, dat->d.st.c_table, 4096) < 0)
+    return -1;
+
+  return 0;
 }
 
 static void read_tree_p(struct LhADecrData *dat) /* read tree from file */
@@ -897,14 +933,15 @@ static void read_tree_p(struct LhADecrData *dat) /* read tree from file */
   }
 }
 
-static uint16 decode_c_st0(struct LhADecrData *dat)
+static int decode_c_st0(struct LhADecrData *dat)
 {
   int32 i, j;
 
   if(!dat->d.st.blocksize) /* read block head */
   {
     dat->d.st.blocksize = getbits(dat, BUFBITS); /* read block blocksize */
-    read_tree_c(dat);
+    if (read_tree_c(dat) < 0)
+      return -1;
     if(getbits(dat, 1))
     {
       read_tree_p(dat);
@@ -913,7 +950,8 @@ static uint16 decode_c_st0(struct LhADecrData *dat)
     {
       ready_made(dat, 1);
     }
-    make_table(dat, NP, dat->d.st.pt_len, 8, dat->d.st.pt_table);
+    if (make_table(dat, NP, dat->d.st.pt_len, 8, dat->d.st.pt_table, 256) < 0)
+      return -1;
   }
   dat->d.st.blocksize--;
   j = dat->d.st.c_table[dat->bitbuf >> 4];
@@ -1343,8 +1381,8 @@ static int32 LhA_Decrunch(FILE *in, FILE *out, int size, uint32 Method)
   int32 err = 0;
 
   if((dd = calloc(sizeof(struct LhADecrData), 1))) {
-    void (*DecodeStart)(struct LhADecrData *);
-    uint16 (*DecodeC)(struct LhADecrData *);
+    int (*DecodeStart)(struct LhADecrData *);
+    int (*DecodeC)(struct LhADecrData *);
     uint16 (*DecodeP)(struct LhADecrData *);
 
     /* most often used stuff */
@@ -1437,7 +1475,12 @@ static int32 LhA_Decrunch(FILE *in, FILE *out, int size, uint32 Method)
 */
           memset(text, ' ', (size_t) dicsiz);
 
-        DecodeStart(dd);
+        if (DecodeStart(dd) < 0) {
+          free(dd->text);
+          free(dd);
+          return -1;
+        }
+
         --dicsiz; /* now used with AND */
         while(1)
         {
@@ -1445,6 +1488,11 @@ static int32 LhA_Decrunch(FILE *in, FILE *out, int size, uint32 Method)
             break;
 
           c = DecodeC(dd);
+          if (c < 0) {
+            free(dd->text);
+            free(dd);
+            return -1;  
+          }
 
 	  if (dd->error)
 	    break;
@@ -1672,10 +1720,15 @@ static int get_header(FILE *f, struct lha_data *data)
 		read8(f);		/* skip OS id */
 		while ((size = read16l(f)) != 0) {
 			int type = read8(f);
+			int s = size - 3;
 			if (type == 0x01) {
-				fread(data->name, 1, size - 3, f);
+				/* Sanity check */
+				if (s < 0 || s > 256)
+					return -1;
+
+				fread(data->name, 1, s, f);
 			} else {
-				fseek(f, size - 3, SEEK_CUR);
+				fseek(f, s, SEEK_CUR);
 			}
 		}
 		break;
@@ -1686,7 +1739,12 @@ static int get_header(FILE *f, struct lha_data *data)
 	return 0;
 }
 
-int decrunch_lha(FILE *in, FILE *out)
+static int test_lha(unsigned char *b) {
+	return b[2] == '-' && b[3] == 'l' && b[4] == 'h' && b[6] == '-' &&
+		b[20] <= 3;
+}
+
+static int decrunch_lha(FILE *in, FILE *out)
 {
 	struct lha_data data;
 
@@ -1695,11 +1753,11 @@ int decrunch_lha(FILE *in, FILE *out)
 			break;
 
 #if 0
-printf("method = %x\n", data.method);
-printf("name = %s\n", data.name);
-printf("packed size = %d\n", data.packed_size);
-printf("original size = %d\n", data.original_size);
-printf("position = %lx\n", ftell(in));
+		printf("method = %x\n", data.method);
+		printf("name = %s\n", data.name);
+		printf("packed size = %d\n", data.packed_size);
+		printf("original size = %d\n", data.original_size);
+		printf("position = %lx\n", ftell(in));
 #endif
 
 		if (exclude_match(data.name)) {
@@ -1712,3 +1770,7 @@ printf("position = %lx\n", ftell(in));
 	return -1;
 }
 
+struct depacker lha_depacker = {
+	test_lha,
+	decrunch_lha
+};

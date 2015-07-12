@@ -1,9 +1,23 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
- * This file is part of the Extended Module Player and is distributed
- * under the terms of the GNU Lesser General Public License. See COPYING.LIB
- * for more information.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 #include "loader.h"
@@ -235,7 +249,7 @@ static int sym_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	struct xmp_module *mod = &m->mod;
 	struct xmp_event *event;
 	int i, j;
-	int ver, infolen, sn[64];
+	int /*ver,*/ infolen, sn[64];
 	uint32 a, b;
 	uint8 *buf;
 	int size, ret;
@@ -245,11 +259,16 @@ static int sym_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 	hio_seek(f, 8, SEEK_CUR);	/* BASSTRAK */
 
-	ver = hio_read8(f);
+	/*ver =*/ hio_read8(f);
 	set_type(m, "Digital Symphony");
 
 	mod->chn = hio_read8(f);
 	mod->len = mod->pat = hio_read16l(f);
+
+	/* Sanity check */
+	if (mod->chn > 8 || mod->pat > 256)
+		return -1;
+
 	mod->trk = hio_read16l(f);	/* Symphony patterns are actually tracks */
 	infolen = hio_read24l(f);
 
@@ -267,12 +286,21 @@ static int sym_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		if (~sn[i] & 0x80) {
 			mod->xxs[i].len = hio_read24l(f) << 1;
 			mod->xxi[i].nsm = 1;
+
+			/* Sanity check */
+			if (mod->xxs[i].len > 0x80000)
+				return -1;
 		}
 	}
 
 	a = hio_read8(f);		/* track name length */
+	if (a > 32) {
+		hio_read(mod->name, 1, 32, f);
+		hio_seek(f, a - 32, SEEK_SET);
+	} else {
+		hio_read(mod->name, 1, a, f);
+	}
 
-	hio_read(mod->name, 1, a, f);
 	hio_read(&allowed_effects, 1, 8, f);
 
 	MODULE_INFO();
@@ -301,7 +329,10 @@ static int sym_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			return -1;
 		}
 	} else {
-		hio_read(buf, 1, size, f);
+		if (hio_read(buf, 1, size, f) != size) {
+			free(buf);
+			return -1;
+		}
 	}
 
 	for (i = 0; i < mod->len; i++) {	/* len == pat */
@@ -313,11 +344,18 @@ static int sym_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 		for (j = 0; j < mod->chn; j++) {
 			int idx = 2 * (i * mod->chn + j);
-			mod->xxp[i]->index[j] = readptr16l(&buf[idx]);
+			int t = readptr16l(&buf[idx]);
 
-			if (mod->xxp[i]->index[j] == 0x1000) /* empty trk */
-				mod->xxp[i]->index[j] = mod->trk - 1;
+			/* Sanity check */
+			if (t >= mod->trk - 1) {
+				free(buf);
+				return -1;
+			}
+	
+			if (t == 0x1000) /* empty trk */
+				t = mod->trk - 1;
 
+			mod->xxp[i]->index[j] = t;
 		}
 		mod->xxo[i] = i;
 	}
@@ -345,7 +383,10 @@ static int sym_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			return -1;
 		}
 	} else {
-		hio_read(buf, 1, size, f);
+		if (hio_read(buf, 1, size, f) != size) {
+			free(buf);
+			return -1;
+		}
 	}
 
 	for (i = 0; i < mod->trk - 1; i++) {
@@ -445,8 +486,9 @@ static int sym_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			return -1;
 	}
 
-	for (i = 0; i < mod->chn; i++)
-		mod->xxc[i].pan = (((i + 3) / 2) % 2) * 0xff;
+	for (i = 0; i < mod->chn; i++) {
+		mod->xxc[i].pan = DEFPAN((((i + 3) / 2) % 2) * 0xff);
+	}
 
 	return 0;
 }

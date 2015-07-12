@@ -17,6 +17,7 @@ int	virt_mute		(struct context_data *, int, int);
 int	virt_setpatch		(struct context_data *, int, int, int, int,
 				 int, int, int);
 int	virt_cvt8bit		(void);
+void	virt_setnote		(struct context_data *, int, int);
 void	virt_setsmp		(struct context_data *, int, int);
 void	virt_setnna		(struct context_data *, int, int);
 void	virt_pastnote		(struct context_data *, int, int);
@@ -32,6 +33,5 @@ void	virt_resetchannel	(struct context_data *, int);
 void	virt_resetvoice		(struct context_data *, int, int);
 void	virt_reset		(struct context_data *);
 int	virt_getroot		(struct context_data *, int);
-
 
 #endif /* LIBXMP_VIRTUAL_H */

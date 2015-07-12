@@ -1,5 +1,5 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * This file is part of the Extended Module Player and is distributed
  * under the terms of the GNU Lesser General Public License. See COPYING.LIB
@@ -9,13 +9,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "depacker.h"
 #include "xz.h"
 #include "crc32.h"
 
 #define BUFFER_SIZE 4096
 
-int decrunch_xz(FILE *in, FILE *out)
+static int test_xz(unsigned char *b)
+{
+	return b[0] == 0xfd && b[3] == 'X' && b[4] == 'Z' && b[5] == 0x00;
+}
+
+static int decrunch_xz(FILE *in, FILE *out)
 {
 	struct xz_buf b;
 	struct xz_dec *state;
@@ -70,3 +75,8 @@ int decrunch_xz(FILE *in, FILE *out)
 
 	return ret;
 }
+
+struct depacker xz_depacker = {
+	test_xz,
+	decrunch_xz
+};

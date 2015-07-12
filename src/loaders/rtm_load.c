@@ -1,9 +1,23 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
- * This file is part of the Extended Module Player and is distributed
- * under the terms of the GNU Lesser General Public License. See COPYING.LIB
- * for more information.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 #include "loader.h"
@@ -153,7 +167,8 @@ static int read_object_header(HIO_HANDLE *f, struct ObjectHeader *h, char *id)
 	h->rc = hio_read8(f);
 	if (h->rc != 0x20)
 		return -1;
-	hio_read(&h->name, 32, 1, f);
+	if (hio_read(&h->name, 1, 32, f) != 32)
+		return -1;
 	h->eof = hio_read8(f);
 	h->version = hio_read16l(f);
 	h->headerSize = hio_read16l(f);
@@ -196,6 +211,14 @@ static int rtm_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	rh.tempo = hio_read8(f);
 	hio_read(&rh.panning, 32, 1, f);
 	rh.extraDataSize = hio_read32l(f);
+
+	/* Sanity check */
+	if (rh.nposition > 255)
+		return -1;
+	if (rh.ntrack > 32)
+		return -1;
+	if (rh.npattern > 255)
+		return -1;
 
 	if (version >= 0x0112)
 		hio_seek(f, 32, SEEK_CUR);		/* skip original name */
@@ -245,6 +268,11 @@ static int rtm_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		rp.nrows = hio_read16l(f);
 		rp.datasize = hio_read32l(f);
 
+		/* Sanity check */
+		if (rp.ntrack > rh.ntrack || rp.nrows > 256) {
+			return -1;
+		}
+
 		offset += 42 + oh.headerSize + rp.datasize;
 
 		if (pattern_tracks_alloc(mod, i, rp.nrows) < 0)
@@ -257,17 +285,21 @@ static int rtm_load(struct module_data *m, HIO_HANDLE *f, const int start)
 				if (c == 0)		/* next row */
 					break;
 
-				/* should never happen! */
+				/* Sanity check */
 				if (j >= rp.ntrack) {
-					D_(D_CRIT "error: decoding "
-						"pattern %d row %d", i, r);
-					break;
+					return -1;
 				}
 
 				event = &EVENT(i, j, r);
 
 				if (c & 0x01) {		/* set track */
 					j = hio_read8(f);
+
+					/* Sanity check */
+					if (j >= rp.ntrack) {
+						return -1;
+					}
+
 					event = &EVENT(i, j, r);
 				}
 				if (c & 0x02) {		/* read note */
@@ -326,9 +358,15 @@ static int rtm_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 		ri.nsample = hio_read8(f);
 		ri.flags = hio_read16l(f);	/* bit 0 : default panning enabled */
-		hio_read(&ri.table, 120, 1, f);
+		if (hio_read(&ri.table, 1, 120, f) != 120)
+			return -1;
 
 		ri.volumeEnv.npoint = hio_read8(f);
+
+		/* Sanity check */
+		if (ri.volumeEnv.npoint >= 12)
+			return -1;
+
 		for (j = 0; j < 12; j++) {
 			ri.volumeEnv.point[j].x = hio_read32l(f);
 			ri.volumeEnv.point[j].y = hio_read32l(f);
@@ -339,6 +377,11 @@ static int rtm_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		ri.volumeEnv.flags = hio_read16l(f); /* bit 0:enable 1:sus 2:loop */
 		
 		ri.panningEnv.npoint = hio_read8(f);
+
+		/* Sanity check */
+		if (ri.panningEnv.npoint >= 12)
+			return -1;
+
 		for (j = 0; j < 12; j++) {
 			ri.panningEnv.point[j].x = hio_read32l(f);
 			ri.panningEnv.point[j].y = hio_read32l(f);

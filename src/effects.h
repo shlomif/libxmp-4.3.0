@@ -81,6 +81,8 @@
 #define FX_IT_PANSLIDE	0x89
 #define FX_PANBRELLO	0x8a
 #define FX_PANBRELLO_WF	0x8b
+#define FX_HIOFFSET	0x8c
+#define FX_SURROUND	0x8d
 #endif
 
 #ifndef LIBXMP_CORE_PLAYER
@@ -100,6 +102,7 @@
 #define FX_VOLSLIDE_DN	0xa1
 #define FX_F_VSLIDE	0xa5	/* IMF/MDL */
 #define FX_CHORUS	0xa9	/* IMF */
+#define FX_ICE_SPEED	0xa2
 #define FX_REVERB	0xaa	/* IMF */
 #define FX_MED_HOLD	0xb1	/* MMD hold/decay */
 #define FX_MEGAARP	0xb2	/* Smaksak effect 7: MegaArp */
@@ -116,5 +119,11 @@
 #define FX_F_PORTA_DN	0xb0	/* MMD */
 #define FX_PATT_DELAY	0xb3	/* MMD */
 #define FX_S3M_ARPEGGIO	0xb4
+#define FX_PANSL_NOMEM	0xb5	/* XM volume column */
+
+#define FX_VSLIDE_UP_2	0xc0	/* IT volume column volume slide */
+#define FX_VSLIDE_DN_2	0xc1
+#define FX_F_VSLIDE_UP_2 0xc2
+#define FX_F_VSLIDE_DN_2 0xc3
 
 #endif /* LIBXMP_EFFECTS_H */

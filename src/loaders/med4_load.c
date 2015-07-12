@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -52,21 +52,6 @@ static int med4_test(HIO_HANDLE *f, char *t, const int start)
 
 	return 0;
 }
-
-#ifdef DEBUG
-static const char *inst_type[] = {
-	"HYB",		/* -2 */
-	"SYN",		/* -1 */
-	"SMP",		/*  0 */
-	"I5O",		/*  1 */
-	"I3O",		/*  2 */
-	"I2O",		/*  3 */
-	"I4O",		/*  4 */
-	"I6O",		/*  5 */
-	"I7O",		/*  6 */
-	"EXT",		/*  7 */
-};
-#endif
 
 const unsigned MAX_CHANNELS = 16;
 
@@ -349,6 +334,11 @@ static int med4_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		hio_seek(f, size + plen - 4, SEEK_CUR);
 	}
 
+	/* Sanity check */
+	if (mod->chn > 16) {
+		return -1;
+	}
+
 	mod->trk = mod->chn * mod->pat;
 
 	if (pattern_init(mod) < 0)
@@ -433,6 +423,9 @@ static int med4_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 		for (j = 0; j < 32; j++) {
 			int line = y * 32 + j;
+
+			if (line >= rows)
+				break;
 
 			if (linemask[y] & 0x80000000) {
 				chmsk = stream_read_aligned16(&stream, chn);
@@ -581,6 +574,14 @@ static int med4_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			synth.volspeed = hio_read8(f);
 			synth.wfspeed = hio_read8(f);
 			synth.wforms = hio_read16b(f);
+
+			/* Sanity check */
+			if (synth.voltbllen > 128 ||
+			    synth.wftbllen > 128 ||
+			    synth.wforms > 256) {
+				return -1;
+			}
+
 			hio_read(synth.voltbl, 1, synth.voltbllen, f);;
 			hio_read(synth.wftbl, 1, synth.wftbllen, f);;
 
@@ -642,6 +643,14 @@ static int med4_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			synth.volspeed = hio_read8(f);
 			synth.wfspeed = hio_read8(f);
 			synth.wforms = hio_read16b(f);
+
+			/* Sanity check */
+			if (synth.voltbllen > 128 ||
+			    synth.wftbllen > 128 ||
+			    synth.wforms > 256) {
+				return -1;
+			}
+
 			hio_read(synth.voltbl, 1, synth.voltbllen, f);;
 			hio_read(synth.wftbl, 1, synth.wftbllen, f);;
 			if (synth.wforms == 0xffff)	
@@ -716,6 +725,10 @@ static int med4_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		sub->pan = 0x80;
 		sub->xpo = temp_inst[i].transpose;
 		sub->sid = smp_idx;
+
+		/* Sanity check */
+		if (smp_idx >= mod->smp)
+			return -1;
 
 		xxs = &mod->xxs[smp_idx];
 

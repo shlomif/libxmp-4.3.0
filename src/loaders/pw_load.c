@@ -1,9 +1,23 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
- * This file is part of the Extended Module Player and is distributed
- * under the terms of the GNU Lesser General Public License. See COPYING.LIB
- * for more information.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 #include <unistd.h>
@@ -16,6 +30,7 @@
 #include "mod.h"
 #include "period.h"
 #include "prowizard/prowiz.h"
+#include "tempfile.h"
 
 extern struct list_head *checked_format;
 
@@ -30,7 +45,7 @@ const struct format_loader pw_loader = {
 
 #define BUF_SIZE 0x10000
 
-int pw_test_format(FILE *f, char *t, const int start,
+int pw_test_format(HIO_HANDLE *f, char *t, const int start,
 		   struct xmp_test_info *info)
 {
 	unsigned char *b;
@@ -41,7 +56,7 @@ int pw_test_format(FILE *f, char *t, const int start,
 	if (b == NULL)
 		return -1;
 
-	fread(b, s, 1, f);
+	s = hio_read(b, 1, s, f);
 
 	while ((extra = pw_check(b, s, info)) > 0) {
 		unsigned char *buf = realloc(b, s + extra);
@@ -50,7 +65,12 @@ int pw_test_format(FILE *f, char *t, const int start,
 			return -1;
 		}
 		b = buf;
-		fread(b + s, extra, 1, f);
+
+		if (hio_read(b + s, extra, 1, f) == 0) {
+			free(b);
+			return -1;
+		}
+
 		s += extra;
 	}
 
@@ -61,47 +81,37 @@ int pw_test_format(FILE *f, char *t, const int start,
 
 static int pw_test(HIO_HANDLE *f, char *t, const int start)
 {
-	if (HIO_HANDLE_TYPE(f) != HIO_HANDLE_TYPE_FILE)
-		return -1;
-
-	return pw_test_format(f->handle.file, t, start, NULL);
+	return pw_test_format(f, t, start, NULL);
 }
 
-static int pw_load(struct module_data *m, HIO_HANDLE *f, const int start)
+static int pw_load(struct module_data *m, HIO_HANDLE *h, const int start)
 {
 	struct xmp_module *mod = &m->mod;
 	struct xmp_event *event;
 	struct mod_header mh;
 	uint8 mod_event[4];
+	HIO_HANDLE *f;
+	FILE *temp;
 	char *name;
-	char tmp[PATH_MAX];
+	char *temp_name;
 	int i, j;
-	int fd;
 
 	/* Prowizard depacking */
 
-	if (get_temp_dir(tmp, PATH_MAX) < 0)
-		return -1;
+	if ((temp = make_temp_file(&temp_name)) == NULL)
+		goto err;
 
-	strncat(tmp, "xmp_XXXXXX", PATH_MAX - 10);
-
-	if ((fd = mkstemp(tmp)) < 0)
-		return -1;
-
-	if (pw_wizardry(fileno(f->handle.file), fd, &name) < 0) {
-		close(fd);
-		unlink(tmp);
-		return -1;
+	if (pw_wizardry(h, temp, &name) < 0) {
+		fclose(temp);
+		goto err2;
 	}
-
-	if ((f = hio_open_fd(fd, "w+b")) == NULL) {
-		close(fd);
-		unlink(tmp);
-		return -1;
-	}
-
-
+	
 	/* Module loading */
+
+	if ((f = hio_open_file(temp)) == NULL) {
+		fclose(temp);
+		goto err2;
+	}
 
 	LOAD_INIT();
 
@@ -120,7 +130,7 @@ static int pw_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	hio_read(&mh.magic, 4, 1, f);
 
 	if (memcmp(mh.magic, "M.K.", 4))
-		goto err;
+		goto err3;
 		
 	mod->ins = 31;
 	mod->smp = mod->ins;
@@ -130,8 +140,6 @@ static int pw_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	memcpy(mod->xxo, mh.order, 128);
 
 	for (i = 0; i < 128; i++) {
-		if (mod->chn > 4)
-			mod->xxo[i] >>= 1;
 		if (mod->xxo[i] > mod->pat)
 			mod->pat = mod->xxo[i];
 	}
@@ -145,11 +153,11 @@ static int pw_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	MODULE_INFO();
 
 	if (instrument_init(mod) < 0)
-	    return -1;
+		goto err3;
 
 	for (i = 0; i < mod->ins; i++) {
 		if (subinstrument_alloc(mod, i, 1) < 0)
-			return -1;
+			goto err3;
 
 		mod->xxs[i].len = 2 * mh.ins[i].size;
 		mod->xxs[i].lps = 2 * mh.ins[i].loop_start;
@@ -175,14 +183,14 @@ static int pw_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	}
 
 	if (pattern_init(mod) < 0)
-		return -1;
+		goto err3;
 
 	/* Load and convert patterns */
 	D_(D_INFO "Stored patterns: %d", mod->pat);
 
 	for (i = 0; i < mod->pat; i++) {
 		if (pattern_tracks_alloc(mod, i, 64) < 0)
-			return -1;
+			goto err3;
 
 		for (j = 0; j < (64 * 4); j++) {
 			event = &EVENT(i, j % 4, j / 4);
@@ -198,15 +206,17 @@ static int pw_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	D_(D_INFO "Stored samples: %d", mod->smp);
 	for (i = 0; i < mod->smp; i++) {
 		if (load_sample(m, f, 0, &mod->xxs[i], NULL) < 0)
-			goto err;
+			goto err3;
 	}
 
 	hio_close(f);
-	unlink(tmp);
+	unlink_temp_file(temp_name);
 	return 0;
 
-err:
+    err3:
 	hio_close(f);
-	unlink(tmp);
+    err2:
+	unlink_temp_file(temp_name);
+    err:
 	return -1;
 }

@@ -1,9 +1,23 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
- * This file is part of the Extended Module Player and is distributed
- * under the terms of the GNU Lesser General Public License. See COPYING.LIB
- * for more information.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 /* AMF loader written based on the format specs by Miodrag Vallat with
@@ -72,6 +86,11 @@ static int amf_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	mod->trk = hio_read16l(f);
 	mod->chn = hio_read8(f);
 
+	/* Sanity check */
+	if (mod->ins == 0 || mod->len == 0 || mod->trk == 0 || mod->chn == 0) {
+		return -1;
+	}
+
 	mod->smp = mod->ins;
 	mod->pat = mod->len;
 
@@ -108,7 +127,7 @@ static int amf_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 	D_(D_INFO "Stored patterns: %d", mod->pat);
 
-	mod->xxp = calloc(sizeof(struct xmp_pattern *), mod->pat + 1);
+	mod->xxp = calloc(sizeof(struct xmp_pattern *), mod->pat);
 	if (mod->xxp == NULL)
 		return -1;
 
@@ -117,6 +136,9 @@ static int amf_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			return -1;
 
 		mod->xxp[i]->rows = ver >= 0x0e ? hio_read16l(f) : 64;
+
+		if (mod->xxp[i]->rows > 256)
+			return -1;
 
 		for (j = 0; j < mod->chn; j++) {
 			uint16 t = hio_read16l(f);
@@ -243,7 +265,6 @@ static int amf_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		t = hio_read16l(f);
 		trkmap[i] = t;
 		if (t > newtrk) newtrk = t;
-/*printf("%d -> %d\n", i, t);*/
 	}
 
 	for (i = 0; i < mod->pat; i++) {		/* read track table */
@@ -256,7 +277,6 @@ static int amf_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			if (k < 0 || k >= mod->trk)
 				k = 0;
 			mod->xxp[i]->index[j] = trkmap[k];
-/*printf("mod->xxp[%d]->info[%d].index = %d (k = %d)\n", i, j, trkmap[k], k);*/
 		}
 	}
 
@@ -279,7 +299,7 @@ static int amf_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		uint8 t1, t2, t3;
 		int size;
 
-		if (track_alloc(mod, i, 64) < 0)
+		if (track_alloc(mod, i, 64) < 0)	/* FIXME! */
 			return -1;
 
 		size = hio_read24l(f);
@@ -294,6 +314,10 @@ static int amf_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			if (t1 == 0xff && t2 == 0xff && t3 == 0xff)
 				break;
 
+			/* Sanity check */
+			if (t1 >= mod->xxt[i]->rows)
+				return -1;
+
 			event = &mod->xxt[i]->event[t1];
 
 			if (t2 < 0x7f) {		/* note */
@@ -301,6 +325,12 @@ static int amf_load(struct module_data *m, HIO_HANDLE *f, const int start)
 					event->note = t2 + 1;
 				event->vol = t3;
 			} else if (t2 == 0x7f) {	/* copy previous */
+
+				/* Sanity check */
+				if (t1 == 0 || t1 > 256) {
+					return -1;
+				}
+
 				memcpy(event, &mod->xxt[i]->event[t1 - 1],
 					sizeof(struct xmp_event));
 			} else if (t2 == 0x80) {	/* instrument */
@@ -458,7 +488,6 @@ static int amf_load(struct module_data *m, HIO_HANDLE *f, const int start)
 				event->fxt = fxt;
 				event->fxp = fxp;
 			}
-
 		}
 	}
 

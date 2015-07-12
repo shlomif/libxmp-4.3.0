@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -245,16 +245,18 @@ int load_sample(struct module_data *m, HIO_HANDLE *f, int flags, struct xmp_samp
 	}
 #endif
 
-	/* Empty samples
+	/* Empty or invalid samples
 	 */
-	if (xxs->len == 0) {
+	if (xxs->len <= 0) {
 		return 0;
 	}
 
 	/* Skip sample loading
 	 * FIXME: fails for ADPCM samples
+	 *
+	 * + Sanity check: skip huge samples (likely corrupt module)
 	 */
-	if (m && m->smpctl & XMP_SMPCTL_SKIP) {
+	if (xxs->len > MAX_SAMPLE_SIZE || (m && m->smpctl & XMP_SMPCTL_SKIP)) {
 		if (~flags & SAMPLE_FLAG_NOLOAD)
 			hio_seek(f, xxs->len, SEEK_CUR);
 		return 0;
@@ -262,6 +264,9 @@ int load_sample(struct module_data *m, HIO_HANDLE *f, int flags, struct xmp_samp
 
 	/* Loop parameters sanity check
 	 */
+	if (xxs->lps < 0) {
+		xxs->lps = 0;
+	}
 	if (xxs->lpe > xxs->len) {
 		xxs->lpe = xxs->len;
 	}
@@ -325,7 +330,7 @@ int load_sample(struct module_data *m, HIO_HANDLE *f, int flags, struct xmp_samp
 	{
 		int x = hio_read(xxs->data, 1, bytelen, f);
 		if (x != bytelen) {
-			D_(D_WARN, "short read (%d) in sample load", x - bytelen);
+			D_(D_WARN "short read (%d) in sample load", x - bytelen);
 			memset(xxs->data + x, 0, bytelen - x);
 		}
 	}
@@ -419,20 +424,17 @@ int load_sample(struct module_data *m, HIO_HANDLE *f, int flags, struct xmp_samp
 			if (xxs->flg & XMP_SAMPLE_LOOP_BIDIR) {
 				lpe += (xxs->lpe - xxs->lps) * 2;
 			}
-			xxs->data[lpe] = xxs->data[lpe - 2];
-			xxs->data[lpe + 1] = xxs->data[lpe - 1];
-			for (i = 0; i < 6; i++) {
-				xxs->data[lpe + 2 + i] = xxs->data[lps + i];
+
+			for (i = 0; i < 8; i++) {
+				xxs->data[lpe + i] = xxs->data[lps + i];
 			}
 		} else {
 			int lpe = xxs->lpe + unroll_extralen;
 			int lps = xxs->lps;
-			xxs->data[lpe] = xxs->data[lpe - 1];
-			for (i = 0; i < 3; i++) {
-				xxs->data[lpe + 1 + i] = xxs->data[lps + i];
+			for (i = 0; i < 4; i++) {
+				xxs->data[lpe + i] = xxs->data[lps + i];
 			}
 		}
 	}
-
 	return 0;
 }

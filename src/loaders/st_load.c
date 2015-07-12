@@ -1,9 +1,23 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
- * This file is part of the Extended Module Player and is distributed
- * under the terms of the GNU Lesser General Public License. See COPYING.LIB
- * for more information.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 /* Ultimate Soundtracker support based on the module format description
@@ -11,9 +25,6 @@
  */
 
 #include <ctype.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-
 #include "loader.h"
 #include "mod.h"
 #include "period.h"
@@ -37,14 +48,14 @@ static const int period[] = {
 static int st_test(HIO_HANDLE *f, char *t, const int start)
 {
     int i, j, k;
-    int pat, smp_size;
+    int pat, ins, smp_size;
     struct st_header mh;
     uint8 mod_event[4];
-    struct stat st;
+    long size;
 
-    hio_stat(f, &st);
+    size = hio_size(f);
 
-    if (st.st_size < 600)
+    if (size < 600)
 	return -1;
 
     smp_size = 0;
@@ -117,17 +128,19 @@ static int st_test(HIO_HANDLE *f, char *t, const int start)
     if (smp_size < 8)
 	return -1;
 
-    if (st.st_size < (600 + pat * 1024 + smp_size))
-	return -1;
-
-    for (i = 0; i < pat; i++) {
+    for (ins = i = 0; i < pat; i++) {
 	for (j = 0; j < (64 * 4); j++) {
-	    int p;
+	    int p, s;
 	
-	    hio_read (mod_event, 1, 4, f);
+	    hio_read(mod_event, 1, 4, f);
 
-	    if (MSN(mod_event[0]))	/* sample number > 15 */
+            s = (mod_event[0] & 0xf0) | MSN(mod_event[2]);
+
+	    if (s > 15)		/* sample number > 15 */
 		return -1;
+
+            if (s > ins)	/* find highest used sample */
+                ins = s;
 
 	    p = 256 * LSN(mod_event[0]) + mod_event[1];
 
@@ -146,6 +159,18 @@ static int st_test(HIO_HANDLE *f, char *t, const int start)
 	}
     }
 
+    /* Check if file was cut before any unused samples */
+    if (size < 600 + pat * 1024 + smp_size) {
+        int ss;
+        for (ss = i = 0; i < ins; i++) {
+            ss += 2 * mh.ins[i].size;
+        }
+
+        if (size < 600 + pat * 1024 + ss) {
+            return -1;
+        }
+    }
+
     hio_seek(f, start, SEEK_SET);
     read_title(f, t, 20);
 
@@ -160,13 +185,17 @@ static int st_load(struct module_data *m, HIO_HANDLE *f, const int start)
     struct xmp_event ev, *event;
     struct st_header mh;
     uint8 mod_event[4];
-    int ust = 1, serr = 0;
+    int ust = 1;
     /* int lps_mult = m->fetch & XMP_CTL_FIXLOOP ? 1 : 2; */
     char *modtype;
     int fxused;
     int pos;
+    int used_ins;		/* Number of samples actually used */
+    long size;
 
     LOAD_INIT();
+
+    size = hio_size(f);
 
     mod->ins = 15;
     mod->smp = mod->ins;
@@ -262,7 +291,7 @@ static int st_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	for (j = 0; j < (64 * mod->chn); j++) {
 	    hio_read (mod_event, 1, 4, f);
 
-	    decode_protracker_event (&ev, mod_event);
+	    decode_protracker_event(&ev, mod_event);
 
 	    if (ev.fxt)
 		fxused |= 1 << ev.fxt;
@@ -306,10 +335,6 @@ static int st_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
     MODULE_INFO();
 
-    if (serr) {
-	D_(D_CRIT "File size error: %d", serr);
-    }
-
     hio_seek(f, start + pos, SEEK_SET);
 
     if (pattern_init(mod) < 0)
@@ -319,6 +344,7 @@ static int st_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
     D_(D_INFO "Stored patterns: %d", mod->pat);
 
+    used_ins = 0;
     for (i = 0; i < mod->pat; i++) {
 	if (pattern_tracks_alloc(mod, i, 64) < 0)
 	    return -1;
@@ -328,6 +354,9 @@ static int st_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	    hio_read (mod_event, 1, 4, f);
 
 	    decode_protracker_event(event, mod_event);
+
+            if (ev.ins > used_ins)
+                used_ins = ev.ins;
 	}
     }
 
@@ -372,7 +401,7 @@ static int st_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
     D_(D_INFO "Stored samples: %d", mod->smp);
 
-    for (i = 0; i < mod->smp; i++) {
+    for (i = 0; i < mod->ins; i++) {
 	if (!mod->xxs[i].len)
 	    continue;
 

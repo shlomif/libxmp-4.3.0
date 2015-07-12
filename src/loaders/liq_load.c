@@ -1,16 +1,29 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
- * This file is part of the Extended Module Player and is distributed
- * under the terms of the GNU Lesser General Public License. See COPYING.LIB
- * for more information.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 /* Liquid Tracker module loader based on the format description written
  * by Nir Oren. Tested with Shell.liq sent by Adi Sapir.
  */
 
-#include <assert.h>
 #include "period.h"
 #include "loader.h"
 
@@ -177,7 +190,7 @@ static void xlat_fx(int c, struct xmp_event *e)
 }
 
 
-static void decode_event(uint8 x1, struct xmp_event *event, HIO_HANDLE *f)
+static int decode_event(uint8 x1, struct xmp_event *event, HIO_HANDLE *f)
 {
     uint8 x2;
 
@@ -206,10 +219,14 @@ static void decode_event(uint8 x1, struct xmp_event *event, HIO_HANDLE *f)
     D_(D_INFO "  event: %02x %02x %02x %02x %02x",
 	event->note, event->ins, event->vol, event->fxt, event->fxp);
 
-    assert (event->note <= 107 || event->note == XMP_KEY_OFF);
-    assert (event->ins <= 100);
-    assert (event->vol <= 64);
-    assert (event->fxt <= 26);
+    /* Sanity check */
+    if (event->note > 107 && event->note != XMP_KEY_OFF)
+	return -1;
+
+    if (event->ins > 100 || event->vol > 64 || event->fxt > 26)
+	return -1;
+
+    return 0;
 }
 
 static int liq_load(struct module_data *m, HIO_HANDLE *f, const int start)
@@ -244,10 +261,19 @@ static int liq_load(struct module_data *m, HIO_HANDLE *f, const int start)
     lh.len = hio_read16l(f);
     lh.hdrsz = hio_read16l(f);
 
+    /* Sanity check */
+    if (lh.chn > XMP_MAX_CHANNELS || lh.pat > 256 || lh.ins > 256) {
+	return -1;
+    }
+
     if ((lh.version >> 8) == 0) {
 	lh.hdrsz = lh.len;
 	lh.len = 0;
 	hio_seek(f, -2, SEEK_CUR);
+    }
+
+    if (lh.len > 256) {
+	return -1;
     }
 
     mod->spd = lh.speed;
@@ -274,8 +300,15 @@ static int liq_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		tracker_name, lh.version >> 8, lh.version & 0x00ff);
 
     if (lh.version > 0) {
-	for (i = 0; i < mod->chn; i++)
-	    mod->xxc[i].pan = hio_read8(f) << 2;
+	for (i = 0; i < mod->chn; i++) {
+	    uint8 pan = hio_read8(f);
+
+	    /* Sanity check */
+	    if (pan >= 64)
+		return -1;
+
+	    mod->xxc[i].pan = pan << 2;
+	}
 
 	for (i = 0; i < mod->chn; i++)
 	    mod->xxc[i].vol = hio_read8(f);
@@ -323,6 +356,11 @@ static int liq_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	lp.size = hio_read32l(f);
 	lp.reserved = hio_read32l(f);
 
+	/* Sanity check */
+	if (lp.rows > 256) {
+	    return -1;
+	}
+
 	D_(D_INFO "rows: %d  size: %d\n", lp.rows, lp.size);
 
 	mod->xxp[i]->rows = lp.rows;
@@ -330,7 +368,7 @@ static int liq_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 	row = 0;
 	channel = 0;
-	count = hio_tell (f);
+	count = hio_tell(f);
 
 /*
  * Packed pattern data is stored full Track after full Track from the left to
@@ -341,10 +379,15 @@ static int liq_load(struct module_data *m, HIO_HANDLE *f, const int start)
  */
 
 read_event:
+	/* Sanity check */
+	if (i >= mod->pat || channel >= mod->chn || row >= mod->xxp[i]->rows)
+	    return -1;
+
 	event = &EVENT(i, channel, row);
 
 	if (x2) {
-	    decode_event (x1, event, f);
+	    if (decode_event(x1, event, f) < 0)
+		return -1;
 	    xlat_fx (channel, event); 
 	    x2--;
 	    goto next_row;	
@@ -353,6 +396,10 @@ read_event:
 	x1 = hio_read8(f);
 
 test_event:
+	/* Sanity check */
+	if (i >= mod->pat || channel >= mod->chn || row >= mod->xxp[i]->rows)
+		return -1;
+
 	event = &EVENT(i, channel, row);
 	D_(D_INFO "* count=%ld chan=%d row=%d event=%02x",
 				hio_tell(f) - count, channel, row, x1);
@@ -360,7 +407,8 @@ test_event:
 	switch (x1) {
 	case 0xc0:			/* end of pattern */
 	    D_(D_WARN "- end of pattern");
-	    assert (hio_tell (f) - count == lp.size);
+	    if (hio_tell(f) - count != lp.size)
+		return -1;
 	    goto next_pattern;
 	case 0xe1:			/* skip channels */
 	    x1 = hio_read8(f);
@@ -388,7 +436,8 @@ test_event:
 
 	if (x1 > 0xc0 && x1 < 0xe0) {	/* packed data */
 	    D_(D_INFO "  [packed data]");
-	    decode_event (x1, event, f);
+	    if (decode_event(x1, event, f) < 0)
+		return -1;
 	    xlat_fx (channel, event); 
 	    goto next_row;
 	}
@@ -396,7 +445,8 @@ test_event:
 	if (x1 > 0xa0 && x1 < 0xc0) {	/* packed data repeat */
 	    x2 = hio_read8(f);
 	    D_(D_INFO "  [packed data - repeat %d times]", x2);
-	    decode_event (x1, event, f);
+	    if (decode_event(x1, event, f) < 0)
+		return -1;
 	    xlat_fx (channel, event); 
 	    goto next_row;
 	}
@@ -404,10 +454,16 @@ test_event:
 	if (x1 > 0x80 && x1 < 0xa0) {	/* packed data repeat, keep note */
 	    x2 = hio_read8(f);
 	    D_(D_INFO "  [packed data - repeat %d times, keep note]", x2);
-	    decode_event (x1, event, f);
+	    if (decode_event(x1, event, f) < 0)
+		return -1;
 	    xlat_fx (channel, event); 
 	    while (x2) {
 	        row++;
+
+		/* Sanity check */
+		if (row >= lp.rows)
+		    return -1;
+
 		memcpy(&EVENT(i, channel, row), event, sizeof (struct xmp_event));
 		x2--;
 	    }
@@ -440,16 +496,22 @@ test_event:
 	x1 = hio_read8(f);
 	event->fxp = x1;
 
-	assert(event->fxt <= 26);
+	/* Sanity check */
+	if (event->fxt > 26) {
+		return -1;
+	}
 
 	xlat_fx(channel, event); 
 
 	D_(D_INFO "  event: %02x %02x %02x %02x %02x\n",
 	    event->note, event->ins, event->vol, event->fxt, event->fxp);
 
-	assert (event->note <= 119 || event->note == XMP_KEY_OFF);
-	assert (event->ins <= 100);
-	assert (event->vol <= 65);
+	/* Sanity check */
+	if (event->note > 119 && event->note != XMP_KEY_OFF)
+		return -1;
+
+	if (event->ins > 100 || event->vol > 65)
+		return -1;
 
 next_row:
 	row++;
@@ -457,11 +519,11 @@ next_row:
 	    row = 0;
 	    x2 = 0;
 	    channel++;
+	}
 
-	    /* FIXME */
-	    if (channel >= mod->chn) {
-		channel = 0;
-	    }
+	/* Sanity check */
+	if (channel >= mod->chn) {
+	    channel = 0;
 	}
 
 	goto read_event;
@@ -492,8 +554,8 @@ next_pattern:
 
 	if (b[0] == '?' && b[1] == '?' && b[2] == '?' && b[3] == '?')
 	    continue;
-	assert (b[0] == 'L' && b[1] == 'D' && b[2] == 'S' && b[3] == 'S');
-	D_(D_WARN "INS %d: %c %c %c %c", i, b[0], b[1], b[2], b[3]);
+	if (b[0] != 'L' || b[1] != 'D' || b[2] != 'S' || b[3] != 'S')
+	    return -1;
 
 	li.version = hio_read16l(f);
 	hio_read(&li.name, 30, 1, f);

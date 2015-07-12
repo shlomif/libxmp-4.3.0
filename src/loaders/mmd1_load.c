@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -138,8 +138,12 @@ static int mmd1_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	}
 	song.numblocks = hio_read16b(f);
 	song.songlen = hio_read16b(f);
-	if (song.songlen > 256)
-	  return -1;
+
+	/* Sanity check */
+	if (song.numblocks > 255 || song.songlen > 256) {
+		return -1;
+	}
+
 	D_(D_INFO "song.songlen = %d", song.songlen);
 	for (i = 0; i < 256; i++)
 		song.playseq[i] = hio_read8(f);
@@ -192,8 +196,15 @@ static int mmd1_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		hio_read32b(f);				/* length */
 		type = hio_read16b(f);
 		if (type == -1) {			/* type is synth? */
+			int wforms;
 			hio_seek(f, 14, SEEK_CUR);
-			mod->smp += hio_read16b(f);		/* wforms */
+			wforms = hio_read16b(f);
+
+			/* Sanity check */
+			if (wforms > 256)
+				return -1;
+
+			mod->smp += wforms;
 		} else if (type >= 1 && type <= 6) {
 			mod->smp += num_oct[type - 1];
 		} else {
@@ -225,6 +236,15 @@ static int mmd1_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		D_(D_INFO "iinfo_offset = 0x%08x", iinfo_offset);
 		expdata.i_ext_entries = hio_read16b(f);
 		expdata.i_ext_entrsz = hio_read16b(f);
+
+		/* Sanity check */
+		if (expsmp_offset < 0 ||
+		    annotxt_offset < 0 ||
+                    expdata.annolen > 0x10000 ||
+		    iinfo_offset < 0) {
+			return -1;
+		}
+
 		hio_read32b(f);
 		hio_read32b(f);
 		hio_read32b(f);
@@ -277,6 +297,11 @@ static int mmd1_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 		if (block.numtracks > mod->chn)
 			mod->chn = block.numtracks;
+	}
+
+	/* Sanity check */
+	if (mod->chn > XMP_MAX_CHANNELS) {
+		return -1;
 	}
 
 	mod->trk = mod->pat * mod->chn;
@@ -421,7 +446,7 @@ static int mmd1_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			hio_read(&xxi->name, 40, 1, f);
 		}
 
-		D_(D_INFO "\n[%2x] %-40.40s %d", i, name, instr.type);
+		D_(D_INFO "[%2x] %-40.40s %d", i, mod->xxi[i].name, instr.type);
 
 		exp_smp.finetune = 0;
 		if (expdata_offset && i < expdata.s_ext_entries) {
@@ -448,9 +473,7 @@ static int mmd1_load(struct module_data *m, HIO_HANDLE *f, const int start)
 				return -1;
 
 			continue;
-		}
-
-		if (instr.type == -1) {			/* Synthetic */
+		} else if (instr.type == -1) {			/* Synthetic */
 			int ret = mmd_load_synth_instrument(f, m, i, smp_idx,
 				&synth, &exp_smp, &song.sample[i]);
 
@@ -466,9 +489,7 @@ static int mmd1_load(struct module_data *m, HIO_HANDLE *f, const int start)
 				return -1;
 
 			continue;
-		}
-
-		if (instr.type >= 1 && instr.type <= 6) {	/* IFFOCT */
+		} else if (instr.type >= 1 && instr.type <= 6) { /* IFFOCT */
 			int ret;
 			const int oct = num_oct[instr.type - 1];
 
@@ -483,9 +504,7 @@ static int mmd1_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			smp_idx += oct;
 
 			continue;
-		}
-
-		if (instr.type == 0) {			/* Sample */
+		} else if (instr.type == 0) {			/* Sample */
 			int ret;
 
 			hio_seek(f, start + smpl_offset + 6, SEEK_SET);
@@ -500,12 +519,15 @@ static int mmd1_load(struct module_data *m, HIO_HANDLE *f, const int start)
 			smp_idx++;
 
 			continue;
+		} else {
+			/* Invalid instrument type */
+			return -1;
 		}
 	}
 
 	for (i = 0; i < mod->chn; i++) {
 		mod->xxc[i].vol = song.trkvol[i];
-		mod->xxc[i].pan = (((i + 1) / 2) % 2) * 0xff;
+		mod->xxc[i].pan = DEFPAN((((i + 1) / 2) % 2) * 0xff);
 	}
 
 	m->read_event_type = READ_EVENT_MED;

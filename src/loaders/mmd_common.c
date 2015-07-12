@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -378,6 +378,11 @@ int mmd_load_hybrid_instrument(HIO_HANDLE *f, struct module_data *m, int i,
 	int length, type;
 	int pos = hio_tell(f);
 
+	/* Sanity check */
+	if (smp_idx >= mod->smp) {
+		return -1;
+	}
+
 	synth->defaultdecay = hio_read8(f);
 	hio_seek(f, 3, SEEK_CUR);
 	synth->rep = hio_read16b(f);
@@ -389,6 +394,11 @@ int mmd_load_hybrid_instrument(HIO_HANDLE *f, struct module_data *m, int i,
 	synth->wforms = hio_read16b(f);
 	hio_read(synth->voltbl, 1, 128, f);;
 	hio_read(synth->wftbl, 1, 128, f);;
+
+	/* Sanity check */
+	if (synth->voltbllen > 128 || synth->wftbllen > 128) {
+		return -1;
+	}
 
 	hio_seek(f, pos - 6 + hio_read32b(f), SEEK_SET);
 	length = hio_read32b(f);
@@ -448,6 +458,11 @@ int mmd_load_synth_instrument(HIO_HANDLE *f, struct module_data *m, int i,
 	for (j = 0; j < 64; j++)
 		synth->wf[j] = hio_read32b(f);
 
+	/* Sanity check */
+	if (synth->voltbllen > 128 || synth->wftbllen > 128 || synth->wforms > 256) {
+		return -1;
+	}
+
 	D_(D_INFO "  VS:%02x WS:%02x WF:%02x %02x %+3d %+1d",
 			synth->volspeed, synth->wfspeed,
 			synth->wforms & 0xff,
@@ -455,8 +470,11 @@ int mmd_load_synth_instrument(HIO_HANDLE *f, struct module_data *m, int i,
 			sample->strans,
 			exp_smp->finetune);
 
-	if (synth->wforms == 0xffff)	
+	if (synth->wforms == 0xffff) {
+		xxi->nsm = 0;
 		return 1;
+	}
+
 	if (synth->wforms > 64)
 		return -1;
 
@@ -473,6 +491,10 @@ int mmd_load_synth_instrument(HIO_HANDLE *f, struct module_data *m, int i,
 	for (j = 0; j < synth->wforms; j++) {
 		struct xmp_subinstrument *sub = &xxi->sub[j];
 		struct xmp_sample *xxs = &mod->xxs[smp_idx];
+
+		/* Sanity check */
+		if (j >= xxi->nsm || smp_idx >= mod->smp)
+			return -1;
 
 		sub->pan = 0x80;
 		sub->vol = 64;
@@ -507,7 +529,11 @@ int mmd_load_sampled_instrument(HIO_HANDLE *f, struct module_data *m, int i,
 	struct xmp_sample *xxs;
 	int j, k;
 
-	// hold & decay support
+	/* Sanity check */
+	if (smp_idx >= mod->smp)
+		return -1;
+
+	/* hold & decay support */
         if (med_new_instrument_extras(xxi) != 0)
                 return -1;
 	MED_INSTRUMENT_EXTRAS(*xxi)->hold = exp_smp->hold;
@@ -614,7 +640,11 @@ int mmd_load_iffoct_instrument(HIO_HANDLE *f, struct module_data *m, int i,
 	if (num_oct < 2 || num_oct > 7)
 		return -1;
 
-	// hold & decay support
+	/* Sanity check */
+	if (smp_idx + num_oct > mod->smp)
+		return -1;
+
+	/* hold & decay support */
 	if (med_new_instrument_extras(xxi) != 0)
 		return -1;
 

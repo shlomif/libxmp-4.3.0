@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -127,10 +127,14 @@ static int ptm_load(struct module_data *m, HIO_HANDLE *f, const int start)
     pfh.rsvd2 = hio_read16l(f);		/* Reserved */
     pfh.magic = hio_read32b(f); 	/* 'PTMF' */
 
-#if 0
     if (pfh.magic != MAGIC_PTMF)
 	return -1;
-#endif
+
+    /* Sanity check */
+    if (pfh.ordnum > 256 || pfh.insnum > 255 || pfh.patnum > 256 ||
+      pfh.chnnum > XMP_MAX_CHANNELS) {
+	return -1;
+    }
 
     hio_read(&pfh.rsvd3, 16, 1, f);	/* Reserved */
     hio_read(&pfh.chset, 32, 1, f);	/* Channel settings */

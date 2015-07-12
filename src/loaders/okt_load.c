@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -79,15 +79,15 @@ static const int fx[] = {
 	FX_OKT_ARP3,		/* 10 */
 	FX_OKT_ARP4,		/* 11 */
 	FX_OKT_ARP5,		/* 12 */
-	FX_NSLIDE_DN,		/* 13 */
+	FX_NSLIDE2_DN,		/* 13 */
 	NONE,
 	NONE,			/* 15 - filter */
 	NONE,
-	FX_NSLIDE_UP,		/* 17 */
+	FX_NSLIDE2_UP,		/* 17 */
 	NONE,
 	NONE,
 	NONE,
-	FX_F_NSLIDE_DN,		/* 21 */
+	FX_NSLIDE_DN,		/* 21 */
 	NONE,
 	NONE,
 	NONE,
@@ -96,22 +96,29 @@ static const int fx[] = {
 	NONE,			/* 27 - release */
 	FX_SPEED,		/* 28 */
 	NONE,
-	FX_F_NSLIDE_UP,		/* 30 */
+	FX_NSLIDE_UP,		/* 30 */
 	FX_VOLSET		/* 31 */
 };
 
 static int get_cmod(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 {
 	struct xmp_module *mod = &m->mod;
-	int i, j, k;
+	int i;
 
 	mod->chn = 0;
 	for (i = 0; i < 4; i++) {
-		j = hio_read16b(f);
-		for (k = ! !j; k >= 0; k--) {
-			mod->xxc[mod->chn].pan = (((i + 1) / 2) % 2) * 0xff;
-			mod->chn++;
+		int pan = (((i + 1) / 2) % 2) * 0xff;
+		int p = 0x80 + (pan - 0x80) * m->defpan / 100;
+
+		if (hio_read16b(f) == 0) {
+			mod->xxc[mod->chn++].pan = p;
+		} else {
+			mod->xxc[mod->chn].flg |= XMP_CHANNEL_SPLIT | (i << 4);
+			mod->xxc[mod->chn++].pan = p;
+			mod->xxc[mod->chn].flg |= XMP_CHANNEL_SPLIT | (i << 4);
+			mod->xxc[mod->chn++].pan = p;
 		}
+
 	}
 
 	return 0;
@@ -123,6 +130,10 @@ static int get_samp(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 	struct local_data *data = (struct local_data *)parm;
 	int i, j;
 	int looplen;
+
+	/* Sanity check */
+	if (size != 36 * 32)
+		return -1;
 
 	/* Should be always 36 */
 	mod->ins = size / 32;	/* sizeof(struct okt_instrument_header); */
@@ -146,8 +157,8 @@ static int get_samp(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 
 		/* Sample size is always rounded down */
 		xxs->len = hio_read32b(f) & ~1;
-		xxs->lps = hio_read16b(f);
-		looplen = hio_read16b(f);
+		xxs->lps = hio_read16b(f) << 1;
+		looplen = hio_read16b(f) << 1;
 		xxs->lpe = xxs->lps + looplen;
 		xxs->flg = looplen > 2 ? XMP_SAMPLE_LOOP : 0;
 
@@ -193,6 +204,11 @@ static int get_plen(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 	struct xmp_module *mod = &m->mod;
 
 	mod->len = hio_read16b(f);
+
+	/* Sanity check */
+	if (mod->len > 256)
+		return -1;
+
 	D_(D_INFO "Module length: %d", mod->len);
 
 	return 0;
@@ -202,7 +218,8 @@ static int get_patt(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 {
 	struct xmp_module *mod = &m->mod;
 
-	hio_read(mod->xxo, 1, mod->len, f);
+	if (hio_read(mod->xxo, 1, mod->len, f) != mod->len)
+		return -1;
 
 	return 0;
 }

@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -162,6 +162,10 @@ static int stx_load(struct module_data *m, HIO_HANDLE *f, const int start)
     sfh.unknown7 = hio_read16l(f);
     sfh.unknown8 = hio_read16l(f);
     hio_read(&sfh.magic2, 4, 1, f);
+
+    /* Sanity check */
+    if (sfh.patnum > 254 || sfh.insnum > 256 || sfh.ordnum > 256)
+	return -1;
 
     /* BMOD2STM does not convert pitch */
     if (!strncmp ((char *) sfh.magic, "BMOD2STM", 8))

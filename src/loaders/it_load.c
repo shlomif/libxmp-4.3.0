@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -148,9 +148,14 @@ static void xlat_fx(int c, struct xmp_event *e, uint8 *last_fxp, int new_fx)
 	    e->fxt = FX_SETPAN;
 	    e->fxp = l << 4;
 	    break;
-	case 0x9:		/* 0x91 = set surround -- NOT IMPLEMENTED */
-	    e->fxt = e->fxp = 0;
+	case 0x9:		/* 0x91 = set surround */
+            e->fxt = FX_SURROUND;
+	    e->fxp = l;
 	    break;
+	case 0xa:		/* High offset */
+            e->fxt = FX_HIOFFSET;
+            e->fxp = l;
+            break;
 	case 0xb:		/* Pattern loop */
 	    e->fxp = 0x60 | l;
 	    break;
@@ -197,7 +202,6 @@ static void xlat_fx(int c, struct xmp_event *e, uint8 *last_fxp, int new_fx)
     if (e->fxt == FX_OFFSET && e->f2t == FX_TONEPORTA) {
         e->f2t = e->f2p = 0;
     }
-
 }
 
 
@@ -211,16 +215,16 @@ static void xlat_volfx(struct xmp_event *event)
     if (b <= 0x40) {
 	event->vol = b + 1;
     } else if (b >= 65 && b <= 74) {	/* A */
-	event->f2t = FX_EXTENDED;
-	event->f2p = (EX_F_VSLIDE_UP << 4) | (b - 65);
+	event->f2t = FX_F_VSLIDE_UP_2;
+	event->f2p = b - 65;
     } else if (b >= 75 && b <= 84) {	/* B */
-	event->f2t = FX_EXTENDED;
-	event->f2p = (EX_F_VSLIDE_DN << 4) | (b - 75);
+	event->f2t = FX_F_VSLIDE_DN_2;
+	event->f2p = b - 75;
     } else if (b >= 85 && b <= 94) {	/* C */
-	event->f2t = FX_VOLSLIDE_2;
-	event->f2p = (b - 85) << 4;
+	event->f2t = FX_VSLIDE_UP_2;
+	event->f2p = b - 85;
     } else if (b >= 95 && b <= 104) {	/* D */
-	event->f2t = FX_VOLSLIDE_2;
+	event->f2t = FX_VSLIDE_DN_2;
 	event->f2p = b - 95;
     } else if (b >= 105 && b <= 114) {	/* E */
 	event->f2t = FX_PORTA_DN;
@@ -265,6 +269,14 @@ static void read_envelope(struct xmp_envelope *ei, struct it_envelope *env, HIO_
 
     env->flg = hio_read8(f);
     env->num = hio_read8(f);
+
+    /* Sanity check */
+    if (env->num >= XMP_MAX_ENV_POINTS) {
+	env->flg = 0;
+	env->num = 0;
+	return;
+    }
+
     env->lpb = hio_read8(f);
     env->lpe = hio_read8(f);
     env->slb = hio_read8(f);
@@ -346,6 +358,11 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
     ifh.sep = hio_read8(f);
     ifh.pwd = hio_read8(f);
 
+    /* Sanity check */
+    if (ifh.gv > 0x80 || ifh.mv > 0x80) {
+        goto err;
+    }
+
     ifh.msglen = hio_read16l(f);
     ifh.msgofs = hio_read32l(f);
     ifh.rsvd = hio_read32l(f);
@@ -358,6 +375,14 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
     mod->ins = ifh.insnum;
     mod->smp = ifh.smpnum;
     mod->pat = ifh.patnum;
+
+    memset(lastevent, 0, L_CHANNELS * sizeof (struct xmp_event));
+    memset(&dummy, 0, sizeof (struct xmp_event));
+
+    /* Sanity check */
+    if (mod->ins > 255 || mod->smp > 255 || mod->pat > 255) {
+	goto err;
+    }
 
     if (mod->ins) {
         pp_ins = calloc(4, mod->ins);
@@ -381,18 +406,19 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
     sample_mode = ~ifh.flags & IT_USE_INST;
 
     if (ifh.flags & IT_LINEAR_FREQ) {
-       m->quirk |= QUIRK_LINEAR;
+        m->quirk |= QUIRK_LINEAR;
     }
 
     if (!sample_mode && ifh.cmwt >= 0x200) {
-       m->quirk |= QUIRK_INSVOL;
+        m->quirk |= QUIRK_INSVOL;
     }
 
     for (i = 0; i < 64; i++) {
 	struct xmp_channel *xxc = &mod->xxc[i];
 
-	if (ifh.chpan[i] == 100)	/* Surround -> center */
-	    ifh.chpan[i] = 32;
+	if (ifh.chpan[i] == 100) {	/* Surround -> center */
+	    mod->xxc[i].flg |= XMP_CHANNEL_SURROUND;
+        }
 
 	if (ifh.chpan[i] & 0x80) {	/* Channel mute */
 	    ifh.chvol[i] = 0;
@@ -419,13 +445,6 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
     new_fx = ifh.flags & IT_OLD_FX ? 0 : 1;
 
-    /* S3M skips pattern 0xfe */
-    for (i = 0; i < (mod->len - 1); i++) {
-	if (mod->xxo[i] == 0xfe) {
-	    memmove(&mod->xxo[i], &mod->xxo[i + 1], mod->len - i - 1);
-	    mod->len--;
-	}
-    }
     for (i = 0; i < mod->ins; i++)
 	pp_ins[i] = hio_read32l(f);
     for (i = 0; i < mod->smp; i++)
@@ -471,7 +490,7 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
     case 0x08:
     case 0x7f:
 	if (ifh.cwt == 0x0888) {
-	    strcpy(tracker_name, "OpenMPT 1.17+");
+	    strcpy(tracker_name, "OpenMPT 1.17");
 	} else if (ifh.cwt == 0x7fff) {
 	    strcpy(tracker_name, "munch.py");
 	} else {
@@ -563,7 +582,10 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 	    i2h.nos = hio_read8(f);
 	    i2h.rsvd1 = hio_read8(f);
-	    hio_read(&i2h.name, 26, 1, f);
+
+            if (hio_read(&i2h.name, 1, 26, f) != 26) {
+                goto err4;
+            }
 
 	    fix_name(i2h.name, 26);
 
@@ -572,7 +594,10 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	    i2h.mch = hio_read8(f);
 	    i2h.mpr = hio_read8(f);
 	    i2h.mbnk = hio_read16l(f);
-	    hio_read(&i2h.keys, 240, 1, f);
+
+            if (hio_read(&i2h.keys, 1, 240, f) != 240) {
+                goto err4; 
+            }
 
 	    copy_adjust(xxi->name, i2h.name, 25);
 	    xxi->rls = i2h.fadeout << 6;
@@ -613,7 +638,7 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 	    for (k = j = 0; j < 120; j++) {
 		c = i2h.keys[j * 2 + 1] - 1;
-		if (c < 0) {
+		if (c < 0 || c >= 120) {
 		    xxi->map[j].ins = 0xff;	/* No sample */
 		    xxi->map[j].xpo = 0;
 		    continue;
@@ -645,6 +670,7 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		    sub->pan = i2h.dfp & 0x80 ? -1 : i2h.dfp * 4;
 		    sub->ifc = i2h.ifc;
 		    sub->ifr = i2h.ifr;
+                    sub->rvv = ((int)i2h.rp << 8) | i2h.rv;
 	        }
 	    }
 
@@ -686,14 +712,20 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	    i1h.nos = hio_read8(f);
 	    i1h.rsvd2 = hio_read8(f);
 
-	    hio_read(&i1h.name, 26, 1, f);
+	    if (hio_read(&i1h.name, 1, 26, f) != 26) {
+                goto err4;
+            }
 
 	    fix_name(i1h.name, 26);
 
-	    hio_read(&i1h.rsvd3, 6, 1, f);
-	    hio_read(&i1h.keys, 240, 1, f);
-	    hio_read(&i1h.epoint, 200, 1, f);
-	    hio_read(&i1h.enode, 50, 1, f);
+	    if (hio_read(&i1h.rsvd3, 1, 6, f) != 6)
+		goto err4;
+	    if (hio_read(&i1h.keys, 1, 240, f) != 240)
+		goto err4;
+	    if (hio_read(&i1h.epoint, 1, 200, f) != 200)
+		goto err4;
+	    if (hio_read(&i1h.enode, 1, 50, f) != 50)
+		goto err4;
 
 	    copy_adjust(xxi->name, i1h.name, 25);
 
@@ -717,7 +749,13 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	    xxi->aei.sus = i1h.sls;
 	    xxi->aei.sue = i1h.sle;
 
-	    for (k = 0; i1h.enode[k * 2] != 0xff; k++);
+	    for (k = 0; k < 25 && i1h.enode[k * 2] != 0xff; k++);
+
+	    /* Sanity check */
+	    if (k >= 25 || i1h.enode[k * 2] != 0xff) {
+		goto err4;
+	    }
+
 	    for (xxi->aei.npt = k; k--; ) {
 		xxi->aei.data[k * 2] = i1h.enode[k * 2];
 		xxi->aei.data[k * 2 + 1] = i1h.enode[k * 2 + 1];
@@ -729,7 +767,7 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 	    for (k = j = 0; j < XMP_MAX_KEYS; j++) {
 		c = j < 120 ? i1h.keys[j * 2 + 1] - 1 : -1;
-		if (c < 0) {
+		if (c < 0 || c >= 120) {
 		    xxi->map[j].ins = 0;
 		    xxi->map[j].xpo = 0;
 		    continue;
@@ -795,7 +833,10 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	ish.gvl = hio_read8(f);
 	ish.flags = hio_read8(f);
 	ish.vol = hio_read8(f);
-	hio_read(&ish.name, 26, 1, f);
+
+	if (hio_read(&ish.name, 1, 26, f) != 26) {
+	    goto err4;
+	}
 
 	fix_name(ish.name, 26);
 
@@ -824,6 +865,12 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	    xxs->flg = XMP_SAMPLE_16BIT;
 	}
 	xxs->len = ish.length;
+
+	/* Sanity check */
+	if (xxs->len > MAX_SAMPLE_SIZE) {
+	    goto err4;
+	}
+
 	xxs->lps = ish.loopbeg;
 	xxs->lpe = ish.loopend;
 
@@ -870,6 +917,11 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		    sub->vsw = (0xff - ish.vir) >> 1;
 
 		    c2spd_to_note(ish.c5spd, &mod->xxi[j].sub[k].xpo, &mod->xxi[j].sub[k].fin);
+
+                    /* Set sample pan (overrides subinstrument) */
+                    if (ish.dfp & 0x80) {
+                        sub->pan = (ish.dfp & 0x7f) * 4;
+                    }
 		}
 	    }
 	}
@@ -913,12 +965,12 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 							&mod->xxs[i], buf);
 		if (ret < 0) {
 		    free(buf);
-		    return -1;
+                    goto err4;
 		}
 		free (buf);
 	    } else {
 		if (load_sample(m, f, cvt, &mod->xxs[i], NULL) < 0)
-		    return -1;
+                    goto err4;
 	    }
 	}
     }
@@ -937,7 +989,7 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	hio_seek(f, start + pp_pat[i], SEEK_SET);
 	pat_len = hio_read16l(f) /* - 4*/;
 	hio_read16l(f);
-	memset (mask, 0, L_CHANNELS);
+	memset(mask, 0, L_CHANNELS);
 	hio_read16l(f);
 	hio_read16l(f);
 
@@ -1013,7 +1065,7 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	if (tracks_in_pattern_alloc(mod, i) < 0)
 	    goto err4;
 
-	memset (mask, 0, L_CHANNELS);
+	memset(mask, 0, L_CHANNELS);
 	hio_read16l(f);
 	hio_read16l(f);
 
@@ -1035,7 +1087,12 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	     * real number of channels before loading the patterns and
 	     * we don't want to set it to 64 channels.
 	     */
-	    event = c >= mod->chn || r >= mod->xxp[i]->rows ? &dummy : &EVENT (i, c, r);
+            if (c >= mod->chn || r >= mod->xxp[i]->rows) {
+                event = &dummy;
+            } else {
+                event = &EVENT(i, c, r);
+            }
+
 	    if (mask[c] & 0x01) {
 		b = hio_read8(f);
 
@@ -1137,13 +1194,15 @@ static int it_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	m->quirk |= QUIRK_VIBHALF | QUIRK_VIBINV;
     } else {
 	m->quirk &= ~QUIRK_VIBALL;
+	m->quirk |= QUIRK_ITOLDFX;
     }
 
     if (sample_mode) {
-	m->quirk &= ~QUIRK_VIRTUAL;
+	m->quirk &= ~(QUIRK_VIRTUAL | QUIRK_RSTCHN);
     }
 
     m->gvolbase = 0x80;
+    m->gvol = ifh.gv;
     m->read_event_type = READ_EVENT_IT;
 
     return 0;

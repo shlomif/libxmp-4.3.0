@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -36,9 +36,6 @@
  */
 
 #include <ctype.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <limits.h>
 #include "loader.h"
 #include "mod.h"
@@ -61,6 +58,7 @@ struct mod_magic {
 #define TRACKER_FLEXTRAX	8
 #define TRACKER_MODSGRAVE	9
 #define TRACKER_SCREAMTRACKER3	10
+#define TRACKER_OPENMPT		11
 #define TRACKER_UNKNOWN_CONV	95
 #define TRACKER_CONVERTEDST	96
 #define TRACKER_CONVERTED	97
@@ -96,12 +94,28 @@ const struct format_loader mod_loader = {
     mod_load
 };
 
+static int validate_pattern(uint8 *buf)
+{
+	int i, j;
+
+	for (i = 0; i < 64; i++) {
+		for (j = 0; j < 4; j++) {
+			uint8 *d = buf + (i * 4 + j) * 4;
+			if ((d[0] >> 4) > 1)
+				return -1;
+		}
+	}
+
+	return 0;
+}
+
 static int mod_test(HIO_HANDLE *f, char *t, const int start)
 {
     int i;
     char buf[4];
-    struct stat st;
+    uint8 pat_buf[1024];
     int smp_size, num_pat;
+    long size;
 
     hio_seek(f, start + 1080, SEEK_SET);
     if (hio_read(buf, 1, 4, f) < 4)
@@ -135,6 +149,17 @@ static int mod_test(HIO_HANDLE *f, char *t, const int start)
     hio_seek(f, start + 20, SEEK_SET);
     for (i = 0; i < 31; i++) {
 	hio_seek(f, 22, SEEK_CUR);		/* Instrument name */
+
+	/* OpenMPT can create mods with large samples */
+	hio_read16b(f);				/* sample size */
+	if (hio_read8(f) & 0xf0)		/* test finetune */
+		return -1;
+	if (hio_read8(f) > 0x40)		/* test volume */
+		return -1;
+	hio_read16b(f);				/* loop start */
+	hio_read16b(f);				/* loop size */
+
+#if 0
 	if (hio_read16b(f) & 0x8000)		/* test length */
 		return -1;
 	if (hio_read8(f) & 0xf0)		/* test finetune */
@@ -145,10 +170,8 @@ static int mod_test(HIO_HANDLE *f, char *t, const int start)
 		return -1;
 	if (hio_read16b(f) & 0x8000)		/* test loop size */
 		return -1;
+#endif
     }
-
-    if (HIO_HANDLE_TYPE(f) != HIO_HANDLE_TYPE_FILE)
-	goto found;
 
     /* Test for UNIC tracker modules
      *
@@ -160,7 +183,7 @@ static int mod_test(HIO_HANDLE *f, char *t, const int start)
      */
 
     /* get file size */
-    hio_stat(f, &st);
+    size = hio_size(f);
     smp_size = 0;
     hio_seek(f, start + 20, SEEK_SET);
 
@@ -183,8 +206,17 @@ static int mod_test(HIO_HANDLE *f, char *t, const int start)
     }
     num_pat++;
 
-    if (start + 1084 + num_pat * 0x300 + smp_size == st.st_size)
+    /* see if module size matches UNIC */
+    if (start + 1084 + num_pat * 0x300 + smp_size == size)
 	return -1;
+
+    /* validate pattern data in an attempt to catch UNICs with MOD size */
+    for (i = 0; i < num_pat; i++) {
+	hio_seek(f, start + 1084 + 1024 * i, SEEK_SET);
+	hio_read(pat_buf, 1024, 1, f);
+	if (validate_pattern(pat_buf) < 0)
+	    return -1;
+    }
 
   found:
     hio_seek(f, start + 0, SEEK_SET);
@@ -222,6 +254,9 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
     char magic[8], idbuffer[32];
     int ptkloop = 0;			/* Protracker loop */
     int tracker_id = TRACKER_PROTRACKER;
+    int has_loop_0 = 0;
+    int has_vol_in_empty_ins = 0;
+    int out_of_range = 0;
 
     LOAD_INIT();
 
@@ -259,7 +294,7 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	}
     }
 
-    if (!mod->chn) {
+    if (mod->chn == 0) {
 	if (!strncmp(magic + 2, "CH", 2) &&
 	    isdigit((int)magic[0]) && isdigit((int)magic[1])) {
 	    mod->chn = (*magic - '0') * 10 + magic[1] - '0';
@@ -270,7 +305,6 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	}
 	tracker_id = mod->chn & 1 ? TRACKER_TAKETRACKER : TRACKER_FASTTRACKER2;
 	detected = 1;
-	m->quirk &= ~QUIRK_MODRNG;
     }
 
     strncpy(mod->name, (char *) mh.name, 20);
@@ -299,6 +333,11 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
     for (i = 0; i < mod->ins; i++) {
 	if (subinstrument_alloc(mod, i, 1) < 0)
 	    return -1;
+
+	if (mh.ins[i].size >= 0x8000) {
+	    tracker_id = TRACKER_OPENMPT;
+	    detected = 1;
+	}
 
 	mod->xxs[i].len = 2 * mh.ins[i].size;
 	mod->xxs[i].lps = 2 * mh.ins[i].loop_start;
@@ -370,6 +409,22 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	goto skip_test;
     }
 
+    /* Check if has instruments with loop size 0 */
+    for (i = 0; i < 31; i++) {
+	if (mh.ins[i].loop_size == 0) {
+            has_loop_0 = 1;
+	    break;
+	}
+    }
+
+    /* Check if has instruments with size 0 and volume > 0 */
+    for (i = 0; i < 31; i++) {
+	if (mh.ins[i].size == 0 && mh.ins[i].volume > 0) {
+	    has_vol_in_empty_ins = 1;
+	    break;
+	}
+    }
+
     /* Test Protracker-like files
      */
     if (mod->chn == 4 && mh.restart == mod->pat) {
@@ -379,7 +434,7 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	 * Protracker effects and Noisetracker restart byte */
         tracker_id = TRACKER_PROBABLY_NOISETRACKER;
     } else if (mh.restart < 0x7f) {
-	if (mod->chn == 4) {
+	if (mod->chn == 4 && !has_vol_in_empty_ins) {
 	    tracker_id = TRACKER_NOISETRACKER;
 	} else {
 	    tracker_id = TRACKER_UNKNOWN;
@@ -389,26 +444,17 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
     if (mod->chn != 4 && mh.restart == 0x7f) {
 	tracker_id = TRACKER_SCREAMTRACKER3;
-	m->quirk &= ~QUIRK_MODRNG;
 	m->read_event_type = READ_EVENT_ST3;
     }
 
     if (mod->chn == 4 && mh.restart == 0x7f) {
-	for (i = 0; i < 31; i++) {
-	    if (mh.ins[i].loop_size == 0)
-		break;
-	}
-	if (i < 31) {
+	if (has_loop_0) {
 	    tracker_id = TRACKER_CLONE;
 	}
     }
 
     if (mh.restart != 0x78 && mh.restart < 0x7f) {
-	for (i = 0; i < 31; i++) {
-	    if (mh.ins[i].loop_size == 0)
-		break;
-	}
-	if (i == 31) {	/* All loops are size 2 or greater */
+	if (!has_loop_0) {	/* All loops are size 2 or greater */
 	    for (i = 0; i < 31; i++) {
 		if (mh.ins[i].size == 1 && mh.ins[i].volume == 0) {
 		    tracker_id = TRACKER_CONVERTED;
@@ -425,7 +471,9 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		    if (mh.ins[i].size == 0 && mh.ins[i].loop_size == 1) {
 			switch (mod->chn) {
 			case 4:
-			    tracker_id = TRACKER_NOISETRACKER;	/* or Octalyser */
+			    tracker_id = has_vol_in_empty_ins ?
+				TRACKER_OPENMPT :
+				TRACKER_NOISETRACKER;	/* or Octalyser */
 			    break;
 			case 6:
 			case 8:
@@ -442,7 +490,6 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	    	    tracker_id = TRACKER_PROTRACKER;
 		} else if (mod->chn == 6 || mod->chn == 8) {
 	    	    tracker_id = TRACKER_FASTTRACKER;	/* FastTracker 1.01? */
-		    m->quirk &= ~QUIRK_MODRNG;
 		} else {
 	    	    tracker_id = TRACKER_UNKNOWN;
 		}
@@ -469,7 +516,6 @@ static int mod_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 	    if (mod->chn == 4 || mod->chn == 6 || mod->chn == 8) {
 	    	tracker_id = TRACKER_FASTTRACKER;
-	        m->quirk &= ~QUIRK_MODRNG;
 		goto skip_test;
 	    }
 
@@ -482,7 +528,7 @@ skip_test:
     mod->trk = mod->chn * mod->pat;
 
     for (i = 0; i < mod->ins; i++) {
-	D_(D_INFO "[%2X] %-22.22s %04x %04x %04x %c V%02x %+d %c\n",
+	D_(D_INFO "[%2X] %-22.22s %04x %04x %04x %c V%02x %+d %c",
 		i, mod->xxi[i].name,
 		mod->xxs[i].len, mod->xxs[i].lps, mod->xxs[i].lpe,
 		(mh.ins[i].loop_size > 1 && mod->xxs[i].lpe > 8) ?
@@ -499,21 +545,48 @@ skip_test:
     D_(D_INFO "Stored patterns: %d", mod->pat);
 
     for (i = 0; i < mod->pat; i++) {
+	long pos;
+
 	if (pattern_tracks_alloc(mod, i, 64) < 0)
 	    return -1;
 
+	pos = hio_tell(f);
+
 	for (j = 0; j < (64 * mod->chn); j++) {
-	    event = &EVENT (i, j % mod->chn, j / mod->chn);
-	    hio_read (mod_event, 1, 4, f);
+            int period;
+
+	    event = &EVENT(i, j % mod->chn, j / mod->chn);
+	    hio_read(mod_event, 1, 4, f);
+
+	    /* Check out-of-range notes in Amiga trackers */
+	    period = ((int)(LSN(mod_event[0])) << 8) | mod_event[1];
+	    if (period != 0 && (period < 108 || period > 907)) {
+		out_of_range = 1;
+		if (tracker_id == TRACKER_PROTRACKER ||
+		    tracker_id == TRACKER_NOISETRACKER ||
+		    tracker_id == TRACKER_PROBABLY_NOISETRACKER ||
+		    tracker_id == TRACKER_SOUNDTRACKER) {   /* note > B-3 */
+			tracker_id = TRACKER_UNKNOWN;
+		}
+	    }
 
 	    /* Filter noisetracker events */
 	    if (tracker_id == TRACKER_PROBABLY_NOISETRACKER) {
 		unsigned char fxt = LSN(mod_event[2]);
 		unsigned char fxp = LSN(mod_event[3]);
-        	if ((fxt > 0x06 && fxt < 0x0a) ||  (fxt == 0x0e && fxp > 1)) {
+
+        	if ((fxt > 0x06 && fxt < 0x0a) || (fxt == 0x0e && fxp > 1)) {
 		    tracker_id = TRACKER_UNKNOWN;
 		}
+
 	    }
+	}
+
+	hio_seek(f, pos, SEEK_SET);
+
+	for (j = 0; j < (64 * mod->chn); j++) {
+	    event = &EVENT(i, j % mod->chn, j / mod->chn);
+	    hio_read(mod_event, 1, 4, f);
 
 	    switch (tracker_id) {
 	    case TRACKER_PROBABLY_NOISETRACKER:
@@ -543,9 +616,11 @@ skip_test:
     case TRACKER_FASTTRACKER:
     case TRACKER_FASTTRACKER2:
 	tracker = "Fast Tracker";
+	m->quirk &= ~QUIRK_MODRNG;
 	break;
     case TRACKER_TAKETRACKER:
 	tracker = "Take Tracker";
+	m->quirk &= ~QUIRK_MODRNG;
 	break;
     case TRACKER_OCTALYSER:
 	tracker = "Octalyser";
@@ -561,7 +636,7 @@ skip_test:
 	break;
     case TRACKER_SCREAMTRACKER3:
 	tracker = "Scream Tracker";
-	break;
+	m->quirk &= ~QUIRK_MODRNG;
 	break;
     case TRACKER_CONVERTEDST:
     case TRACKER_CONVERTED:
@@ -569,12 +644,22 @@ skip_test:
 	break;
     case TRACKER_CLONE:
 	tracker = "Protracker clone";
+	m->quirk &= ~QUIRK_MODRNG;
+	break;
+    case TRACKER_OPENMPT:
+	tracker = "OpenMPT";
+	ptkloop = 1;
 	break;
     default:
     case TRACKER_UNKNOWN_CONV:
     case TRACKER_UNKNOWN:
 	tracker = "Unknown tracker";
+	m->quirk &= ~QUIRK_MODRNG;
 	break;
+    }
+
+    if (out_of_range) {
+	m->quirk &= ~QUIRK_MODRNG;
     }
 
     if (tracker_id == TRACKER_MODSGRAVE) {
@@ -584,8 +669,6 @@ skip_test:
     }
 
     MODULE_INFO();
-
-
 
 
     /* Load samples */
@@ -631,12 +714,15 @@ skip_test:
 	}
     }
 
-    if (mod->chn > 4) {
+    if (tracker_id == TRACKER_PROTRACKER || tracker_id == TRACKER_OPENMPT) {
+	m->quirk |= QUIRK_PROTRACK;
+    } else if (tracker_id == TRACKER_SCREAMTRACKER3) {
+	m->quirk |= QUIRKS_ST3;
+	m->read_event_type = READ_EVENT_ST3;
+    } else if (mod->chn > 4) {
 	m->quirk &= ~QUIRK_MODRNG;
 	m->quirk |= QUIRKS_FT2;
 	m->read_event_type = READ_EVENT_FT2;
-    } else if (strcmp(tracker, "Protracker") == 0) {
-	m->quirk |= QUIRK_INVLOOP;
     }
 
     return 0;

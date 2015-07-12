@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -276,9 +276,9 @@ static int get_pbod(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 				uint8 note = hio_read8(f);
 				rowlen--;
 				if (data->sinaria)
-					note += 37;
+					note += 36;
 				else
-					note = (note >> 4) * 12 + (note & 0x0f) + 2 + 12;
+					note = (note >> 4) * 12 + (note & 0x0f) + 1 + 12;
 				event->note = note;
 			}
 
@@ -288,7 +288,7 @@ static int get_pbod(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 			}
 	
 			if (flag & 0x20) {
-				event->vol = hio_read8(f) / 2;
+				event->vol = hio_read8(f) / 2 + 1;
 				rowlen--;
 			}
 	
@@ -303,13 +303,14 @@ static int get_pbod(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 					case 0x0: {
 						uint8 note;
 						note = (fxt>>4)*12 +
-							(fxt & 0x0f) + 2;
+							(fxt & 0x0f) + 1;
 						event->note = note;
 						fxt = FX_TONEPORTA;
 						fxp = (fxp + 1) * 2;
 						break; }
 					default:
 D_(D_CRIT "p%d r%d c%d: compressed event %02x %02x\n", i, r, chan, fxt, fxp);
+						return -1;
 					}
 				} else
 				switch (fxt) {
@@ -439,7 +440,8 @@ static int get_song_2(struct module_data *m, int size, HIO_HANDLE *f, void *parm
 			hio_read8(f);		/* ? */
 			break;
 		default:
-			printf("channel %d: %02x %02x\n", i, c, hio_read8(f));
+			/*printf("channel %d: %02x %02x\n", i, c, hio_read8(f));*/
+			return -1;
 		}
 	}
 

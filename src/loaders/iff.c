@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -53,7 +53,7 @@ iff_handle iff_new()
 static int iff_chunk(iff_handle opaque, struct module_data *m, HIO_HANDLE *f, void *parm)
 {
 	struct iff_data *data = (struct iff_data *)opaque;
-	long size;
+	int size;
 	char id[17] = "";
 
 	if (hio_read(id, 1, data->id_size, f) != data->id_size)
@@ -81,7 +81,7 @@ static int iff_chunk(iff_handle opaque, struct module_data *m, HIO_HANDLE *f, vo
 		size -= data->id_size + 4;
 
 	if (size < 0)
-		return 1;
+		return -1;
 
 	return iff_process(opaque, m, id, size, f, parm);
 }
@@ -151,6 +151,8 @@ int iff_process(iff_handle opaque, struct module_data *m, char *id, long size,
 	list_for_each(tmp, &data->iff_list) {
 		i = list_entry(tmp, struct iff_info, list);
 		if (id && !strncmp(id, i->id, data->id_size)) {
+			D_(D_WARN "Load IFF chunk %s (%ld) @ %d",
+							id, size, pos);
 			if (i->loader(m, size, f, parm) < 0)
 				return -1;
 			break;

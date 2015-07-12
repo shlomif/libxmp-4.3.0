@@ -43,6 +43,7 @@ const struct pw_format *const pw_format[NUM_PW_FORMATS + 1] = {
 	&pw_eu,
 	&pw_p4x,
 	&pw_pp21,
+	&pw_pp30,
 	&pw_p50a,
 	&pw_p60a,
 	&pw_p61a,
@@ -62,9 +63,18 @@ const struct pw_format *const pw_format[NUM_PW_FORMATS + 1] = {
 	NULL
 };
 
-int pw_move_data(FILE *out, FILE *in, int len)
+int pw_move_data(FILE *out, HIO_HANDLE *in, int len)
 {
-	return move_data(out, in, len);
+	uint8 buf[1024];
+	int l;
+
+	do {
+		l = hio_read(buf, 1, len > 1024 ? 1024 : len, in);
+		fwrite(buf, 1, l, out);
+		len -= l;
+	} while (l > 0 && len > 0);
+
+	return 0;
 }
 
 int pw_write_zero(FILE *out, int len)
@@ -82,27 +92,14 @@ int pw_write_zero(FILE *out, int len)
 	return 0;
 }
 
-int pw_wizardry(int in, int out, char **name)
+int pw_wizardry(HIO_HANDLE *file_in, FILE *file_out, char **name)
 {
-	struct stat st;
-	int size = -1, in_size;
+	int in_size;
 	uint8 *data;
-	FILE *file_in, *file_out;
 	char title[21];
 	int i;
 
-	file_in = fdopen(dup(in), "rb");
-	if (file_in == NULL)
-		return -1;
-
-	file_out = fdopen(dup(out), "w+b");
-	if (file_out == NULL)
-		return -1;
-
-	if (fstat(fileno(file_in), &st) < 0)
-		in_size = -1;
-	else
-		in_size = st.st_size;
+	in_size = hio_size(file_in);
 
 	/* printf ("input file size : %d\n", in_size); */
 	if (in_size < MIN_FILE_LENGHT)
@@ -111,10 +108,10 @@ int pw_wizardry(int in, int out, char **name)
 	/* alloc mem */
 	data = (uint8 *)malloc (in_size + 4096);	/* slack added */
 	if (data == NULL) {
-		perror("Couldn't allocate memory");
+		/*perror("Couldn't allocate memory");*/
 		return -1;
 	}
-	fread(data, in_size, 1, file_in);
+	hio_read(data, in_size, 1, file_in);
 
 
   /********************************************************************/
@@ -132,16 +129,13 @@ int pw_wizardry(int in, int out, char **name)
 		return -1;
 	}
 
-	fseek(file_in, 0, SEEK_SET);
-	size = pw_format[i]->depack(file_in, file_out);
-
-	if (size < 0) {
+	hio_seek(file_in, 0, SEEK_SET);
+	if (pw_format[i]->depack(file_in, file_out) < 0) {
+		free(data);
 		return -1;
 	}
 
-	fclose(file_out);
-	fclose(file_in);
-
+	fflush(file_out);
 	free(data);
 
 	if (name != NULL) {

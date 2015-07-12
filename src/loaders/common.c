@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -34,11 +34,13 @@
 
 int instrument_init(struct xmp_module *mod)
 {
-	mod->xxi = calloc(sizeof (struct xmp_instrument), mod->ins);
-	if (mod->xxi == NULL)
-		return -1;
+	if (mod->ins > 0) {
+		mod->xxi = calloc(sizeof (struct xmp_instrument), mod->ins);
+		if (mod->xxi == NULL)
+			return -1;
+	}
 
-	if (mod->smp) {
+	if (mod->smp > 0) {
 		mod->xxs = calloc (sizeof (struct xmp_sample), mod->smp);
 		if (mod->xxs == NULL)
 			return -1;
@@ -74,6 +76,10 @@ int pattern_init(struct xmp_module *mod)
 
 int pattern_alloc(struct xmp_module *mod, int num)
 {
+	/* Sanity check */
+	if (num < 0 || num >= mod->pat || mod->xxp[num] != NULL)
+		return -1;
+
 	mod->xxp[num] = calloc(1, sizeof (struct xmp_pattern) +
         				sizeof (int) * (mod->chn - 1));
 	if (mod->xxp[num] == NULL)
@@ -84,8 +90,12 @@ int pattern_alloc(struct xmp_module *mod, int num)
 
 int track_alloc(struct xmp_module *mod, int num, int rows)
 {
-	mod->xxt[num] = calloc (sizeof (struct xmp_track) +
-				sizeof (struct xmp_event) * (rows - 1), 1);
+	/* Sanity check */
+	if (num < 0 || num >= mod->trk || mod->xxt[num] != NULL || rows <= 0)
+		return -1;
+
+	mod->xxt[num] = calloc(sizeof (struct xmp_track) +
+			       sizeof (struct xmp_event) * (rows - 1), 1);
 	if (mod->xxt[num] == NULL)
 		return -1;
 
@@ -98,6 +108,7 @@ int tracks_in_pattern_alloc(struct xmp_module *mod, int num)
 {
 	int i;
 
+	D_(D_INFO "Alloc %d tracks of %d rows", mod->chn, mod->xxp[num]->rows);
 	for (i = 0; i < mod->chn; i++) {
 		int t = num * mod->chn + i;
 		int rows = mod->xxp[num]->rows;
@@ -113,8 +124,13 @@ int tracks_in_pattern_alloc(struct xmp_module *mod, int num)
 
 int pattern_tracks_alloc(struct xmp_module *mod, int num, int rows)
 {
+	/* Sanity check */
+	if (rows < 0 || rows > 256)
+		return -1;
+
 	if (pattern_alloc(mod, num) < 0)
 		return -1;
+
 	mod->xxp[num]->rows = rows;
 
 	if (tracks_in_pattern_alloc(mod, num) < 0)
@@ -254,7 +270,7 @@ void decode_protracker_event(struct xmp_event *event, uint8 *mod_event)
 
 void disable_continue_fx(struct xmp_event *event)
 {
-	if (!event->fxp) {
+	if (event->fxp == 0) {
 		switch (event->fxt) {
 		case 0x05:
 			event->fxt = 0x03;
@@ -266,6 +282,10 @@ void disable_continue_fx(struct xmp_event *event)
 		case 0x02:
 		case 0x0a:
 			event->fxt = 0x00;
+		}
+	} else if (event->fxt == 0x0e) {
+		if (event->fxp == 0xa0 || event->fxp == 0xb0) {
+			event->fxt = event->fxp = 0;
 		}
 	}
 }

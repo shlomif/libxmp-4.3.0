@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -29,8 +29,6 @@
 #else
 #include <limits.h>
 #endif
-#include <sys/types.h>
-#include <sys/stat.h>
 #include "period.h"
 #include "loader.h"
 
@@ -113,15 +111,26 @@ int med2_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	mod->pat = hio_read16b(f);
 	mod->trk = mod->chn * mod->pat;
 
-	hio_read(mod->xxo, 1, 100, f);
+	if (hio_read(mod->xxo, 1, 100, f) != 100)
+		return -1;
+
 	mod->len = hio_read16b(f);
 
-	mod->spd = 192 / hio_read16b(f);
+	/* Sanity check */
+	if (mod->pat > 256 || mod->len > 100)
+		return -1;
+
+	k = hio_read16b(f);
+	if (k < 1) {
+		return -1;
+	}
+
+	mod->spd = 192 / k;
 
 	hio_read16b(f);			/* flags */
-	sliding = hio_read16b(f);		/* sliding */
+	sliding = hio_read16b(f);	/* sliding */
 	hio_read32b(f);			/* jumping mask */
-	hio_seek(f, 16, SEEK_CUR);		/* rgb */
+	hio_seek(f, 16, SEEK_CUR);	/* rgb */
 
 	MODULE_INFO();
 
@@ -181,7 +190,6 @@ int med2_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		char ins_path[256];
 		char name[256];
 		HIO_HANDLE *s = NULL;
-		struct stat stat;
 		int found;
 
 		get_instrument_path(m, ins_path, 256);
@@ -191,8 +199,7 @@ int med2_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		if (found) {
 			snprintf(path, PATH_MAX, "%s/%s", ins_path, name);
 			if ((s = hio_open(path, "rb"))) {
-				hio_stat(s, &stat);
-				mod->xxs[i].len = stat.st_size;
+				mod->xxs[i].len = hio_size(s);
 			}
 		}
 

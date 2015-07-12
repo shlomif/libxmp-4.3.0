@@ -53,7 +53,13 @@ struct huffman_tree_t
   short int right;
 };
 
-static const int length_codes[29] = { 3,4,5,6,7,8,9,10,11,13,15,17,19,
+#define DIST_CODES_SIZE 30
+#define LENGTH_CODES_SIZE 29
+#define HUFFMAN_TREE_SIZE 1024
+#define DYN_HUFF_TRANS_SIZE 19
+
+static const int length_codes[LENGTH_CODES_SIZE] = {
+                         3,4,5,6,7,8,9,10,11,13,15,17,19,
                          23,27,31,35,43,51,59,67,83,99,115,
                          131,163,195,227,258 };
 
@@ -61,7 +67,7 @@ static const int length_extra_bits[29] = { 0,0,0,0,0,0,0,0,1,1,1,1,
                               2,2,2,2,3,3,3,3,4,4,4,4,
                               5,5,5,5,0 };
 
-static const int dist_codes[30] = { 1,2,3,4,5,7,9,13,17,25,
+static const int dist_codes[DIST_CODES_SIZE] = { 1,2,3,4,5,7,9,13,17,25,
                              33,49,65,97,129,193,257,385,513,769,
                              1025,1537,2049,3073,4097,6145,8193,
                              12289,16385,24577 };
@@ -70,7 +76,8 @@ static const int dist_extra_bits[30] = { 0,0,0,0,1,1,2,2,3,3,
                             4,4,5,5,6,6,7,7,8,8,
                             9,9,10,10,11,11,12,12,13,13 };
 
-static const int dyn_huff_trans[19] = { 16, 17, 18, 0, 8, 7, 9, 6, 10, 5,
+static const int dyn_huff_trans[DYN_HUFF_TRANS_SIZE] = {
+                           16, 17, 18, 0, 8, 7, 9, 6, 10, 5,
                            11, 4, 12, 3, 13, 2, 14, 1, 15 };
 
 static const unsigned char reverse[256] = {
@@ -103,6 +110,7 @@ int print_binary(int b, int l)
 }
 #endif
 
+#if 0
 static int kunzip_inflate_free(struct inflate_data *data)
 {
   if (data->huffman_tree_len_static!=0)
@@ -110,6 +118,7 @@ static int kunzip_inflate_free(struct inflate_data *data)
 
   return 0;
 }
+#endif
 
 #if 0
 static unsigned int get_alder(FILE *out)
@@ -276,7 +285,7 @@ printf("load_fixed_huffman()\n");
   return 0;
 }
 
-static int load_codes(FILE *in, struct bitstream_t *bitstream, int *lengths, int count, int *hclen_code_length, int *hclen_code, struct huffman_tree_t *huffman_tree)
+static int load_codes(FILE *in, struct bitstream_t *bitstream, int *lengths, int len_size, int count, int *hclen_code_length, int *hclen_code, struct huffman_tree_t *huffman_tree)
 {
   int r,t,c,x;
   int code,curr_code;
@@ -322,6 +331,10 @@ static int load_codes(FILE *in, struct bitstream_t *bitstream, int *lengths, int
 
     if (t<=15)
     {
+      /* Sanity check */
+      if (r >= len_size)
+        return -1;
+
       lengths[r++]=t;
     }
       else
@@ -342,6 +355,10 @@ static int load_codes(FILE *in, struct bitstream_t *bitstream, int *lengths, int
       bitstream->bitptr-=2;
       bitstream->holding=bitstream->holding&((1<<bitstream->bitptr)-1);
 
+      /* Sanity check */
+      if (r + x + 3 >= len_size)
+        return -1;
+
       for (c=0; c<x+3; c++)
       { lengths[r++]=code; }
     }
@@ -359,6 +376,11 @@ static int load_codes(FILE *in, struct bitstream_t *bitstream, int *lengths, int
       bitstream->holding=bitstream->holding&((1<<bitstream->bitptr)-1);
 
       c=x+3;
+
+      /* Sanity check */
+      if (r + c >= len_size)
+        return -1;
+
       memset(&lengths[r],0,sizeof(int)*c);
       r=r+c;
     }
@@ -376,13 +398,20 @@ static int load_codes(FILE *in, struct bitstream_t *bitstream, int *lengths, int
       bitstream->holding=bitstream->holding&((1<<bitstream->bitptr)-1);
 
       c=x+11;
+
+      /* Sanity check */
+      if (r + c >= len_size)
+        return -1;
+
       memset(&lengths[r],0,sizeof(int)*c);
       r=r+c;
 
     }
       else
     {
-      fprintf(stderr, "unzip: error in bitstream reading in literal code length %d\n",t);
+#ifdef DEBUG
+      fprintf(stderr, "inflate: error in bitstream reading in literal code length %d\n",t);
+#endif
       return -1;
     }
   }
@@ -510,6 +539,10 @@ static int load_dynamic_huffman(FILE *in, struct huffman_t *huffman, struct bits
   hdist=(reverse[hdist]>>3)+1;
   hclen=(reverse[hclen]>>4)+4;
 
+  /* Sanity check */
+  if (hclen > DYN_HUFF_TRANS_SIZE)
+    return -1;
+
 /* printf("%d %d %d\n",hclen,sizeof(struct huffman_tree_t),hclen*sizeof(struct huffman_tree_t)); */
 
 #ifdef DEBUG
@@ -527,16 +560,18 @@ static int load_dynamic_huffman(FILE *in, struct huffman_t *huffman, struct bits
 
   for (t=0; t<hclen; t++)
   {
+    int len;
+
     if (bitstream->bitptr<3)
     {
       bitstream->holding=reverse[getc(in)]+(bitstream->holding<<8);
       bitstream->bitptr+=8;
     }
 
-    hclen_code_lengths[dyn_huff_trans[t]]=(bitstream->holding>>(bitstream->bitptr-3));
-    hclen_code_lengths[dyn_huff_trans[t]]=reverse[hclen_code_lengths[dyn_huff_trans[t]]]>>5;
-    bitstream->bitptr-=3;
-    bitstream->holding=bitstream->holding&((1<<bitstream->bitptr)-1);
+    len = bitstream->holding >> (bitstream->bitptr-3);
+    hclen_code_lengths[dyn_huff_trans[t]] = reverse[len] >> 5;
+    bitstream->bitptr -= 3;
+    bitstream->holding = bitstream->holding&((1<<bitstream->bitptr)-1);
   }
 
 #ifdef DEBUG
@@ -610,7 +645,7 @@ static int load_dynamic_huffman(FILE *in, struct huffman_t *huffman, struct bits
   memset(huffman->len,0,288*sizeof(int));
   /* memset(huffman->code,0,288*sizeof(int)); */
 
-  res = load_codes(in,bitstream,huffman->len,hlit,hclen_code_lengths,hclen_code,huffman_tree_len);
+  res = load_codes(in,bitstream,huffman->len,288,hlit,hclen_code_lengths,hclen_code,huffman_tree_len);
   if (res < 0)
     return -1;
 
@@ -641,7 +676,7 @@ static int load_dynamic_huffman(FILE *in, struct huffman_t *huffman, struct bits
     memset(huffman->dist_len,0,33*sizeof(int));
     /* memset(huffman->dist_code,0,33*sizeof(int)); */
 
-    res = load_codes(in,bitstream,huffman->dist_len,hdist,hclen_code_lengths,hclen_code,huffman_tree_dist);
+    res = load_codes(in,bitstream,huffman->dist_len,33,hdist,hclen_code_lengths,hclen_code,huffman_tree_dist);
     if (res < 0)
       return -1;
 
@@ -709,6 +744,14 @@ int decompress(FILE *in, struct huffman_t *huffman, struct bitstream_t *bitstrea
         curr_leaf=huffman_tree_len[curr_leaf].right;
       }
 
+      /* Sanity check */
+      if (curr_leaf >= HUFFMAN_TREE_SIZE) {
+#ifdef DEBUG
+	fprintf(stderr, "inflate: corrupt huffman tree\n");
+#endif
+	return -1;
+      }
+
       bitstream->bitptr-=1;
       bitstream->holding>>=1;
     }
@@ -752,6 +795,11 @@ int decompress(FILE *in, struct huffman_t *huffman, struct bitstream_t *bitstrea
   fflush(stdout);
 #endif
       code=code-257;
+
+      /* Sanity check */
+      if (code >= LENGTH_CODES_SIZE)
+        return -1;
+
       len=length_codes[code];
       if (length_extra_bits[code]!=0)
       {
@@ -826,9 +874,25 @@ int decompress(FILE *in, struct huffman_t *huffman, struct bitstream_t *bitstrea
             curr_leaf=huffman_tree_dist[curr_leaf].right;
           }
 
+          /* Sanity check */
+          if (curr_leaf >= HUFFMAN_TREE_SIZE) {
+#ifdef DEBUG
+	    fprintf(stderr, "inflate: corrupt huffman tree\n");
+#endif
+	    return -1;
+          }
+
           bitstream->bitptr-=1;
           bitstream->holding>>=1;
         }
+      }
+
+      /* Sanity check */
+      if (code >= DIST_CODES_SIZE) {
+#ifdef DEBUG
+	fprintf(stderr, "inflate: corrupt input\n");
+#endif
+        return -1;
       }
 
       dist=dist_codes[code];
@@ -931,13 +995,17 @@ int inflate(FILE *in, FILE *out, uint32 *checksum, int is_zip)
 
   data.huffman_tree_len_static=0;
 
-  huffman_tree_len=malloc(1024*sizeof(struct huffman_tree_t));
+  huffman_tree_len=malloc(HUFFMAN_TREE_SIZE * sizeof(struct huffman_tree_t));
   if (huffman_tree_len == NULL)
     goto err;
 
-  huffman_tree_dist=malloc(1024*sizeof(struct huffman_tree_t));
+  memset(huffman_tree_len, 0xff, HUFFMAN_TREE_SIZE * sizeof(struct huffman_tree_t));
+
+  huffman_tree_dist=malloc(HUFFMAN_TREE_SIZE * sizeof(struct huffman_tree_t));
   if (huffman_tree_dist == NULL)
     goto err2;
+
+  memset(huffman_tree_dist, 0xff, HUFFMAN_TREE_SIZE * sizeof(struct huffman_tree_t));
 
   huffman.window_ptr=0;
 
@@ -1041,7 +1109,9 @@ if (!is_zip) {
 	  goto err4;
       }
 
-      decompress(in, &huffman, &bitstream, data.huffman_tree_len_static, 0, out, &data);
+      if (decompress(in, &huffman, &bitstream, data.huffman_tree_len_static, 0, out, &data) < 0) {
+          goto err4;
+      }
 /*
       free(huffman_tree_len);
       huffman_tree_len=0;
@@ -1053,10 +1123,13 @@ if (!is_zip) {
 
       /* Dynamic Huffman */
       res = load_dynamic_huffman(in,&huffman,&bitstream,huffman_tree_len,huffman_tree_dist);
-      if (res < 0) 
+      if (res < 0) {
         goto err4;
+      }
 
-      decompress(in, &huffman, &bitstream, huffman_tree_len, huffman_tree_dist, out, &data);
+      if (decompress(in, &huffman, &bitstream, huffman_tree_len, huffman_tree_dist, out, &data) < 0) {
+        goto err4;
+      }
 
     }
       else
@@ -1083,7 +1156,7 @@ if (!is_zip) {
 
   *checksum=huffman.checksum^0xffffffff;
 
-  kunzip_inflate_free(&data);
+  free(data.huffman_tree_len_static);
 
   /* for gzip */
   if (bitstream.bitptr == 8) {
@@ -1094,7 +1167,7 @@ if (!is_zip) {
   return 0;
 
  err4:
-  kunzip_inflate_free(&data);
+  free(data.huffman_tree_len_static);
  err3:
   free(huffman_tree_dist);
  err2:

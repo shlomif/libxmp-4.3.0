@@ -1,5 +1,5 @@
-/* Extended Module Player core player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -69,12 +69,18 @@ static void do_toneporta(struct module_data *m,
 {
 	struct xmp_instrument *instrument = &m->mod.xxi[xc->ins];
 	int mapped = instrument->map[xc->key].ins;
-	struct xmp_subinstrument *sub = &instrument->sub[mapped];
+	struct xmp_subinstrument *sub;
+
+	if (mapped >= instrument->nsm) {
+		mapped = 0;
+	}
+
+	sub = &instrument->sub[mapped];
 
 	if (note >= 1 && note <= 0x80 && (uint32)xc->ins < m->mod.ins) {
 		note--;
 		xc->porta.target = note_to_period(note + sub->xpo +
-			instrument->map[xc->key].xpo, xc->finetune,
+			instrument->map[xc->key_porta].xpo, xc->finetune,
 			HAS_QUIRK(QUIRK_LINEAR), xc->per_adj);
 	}
 	xc->porta.dir = xc->period < xc->porta.target ? 1 : -1;
@@ -82,13 +88,28 @@ static void do_toneporta(struct module_data *m,
 
 
 void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
-		uint8 note, uint8 fxt, uint8 fxp, int fnum)
+		struct xmp_event *e, int fnum)
 {
 	struct player_data *p = &ctx->p;
 	struct module_data *m = &ctx->m;
 	struct xmp_module *mod = &m->mod;
 	struct flow_control *f = &p->flow;
+	uint8 note, fxp, fxt;
 	int h, l;
+
+	/* key_porta is IT only */
+	if (m->read_event_type != READ_EVENT_IT) {
+		xc->key_porta = xc->key;
+	}
+
+	note = e->note;
+	if (fnum == 0) {
+		fxt = e->fxt;
+		fxp = e->fxp;
+	} else {
+		fxt = e->f2t;
+		fxp = e->f2p;
+	}
 
 	switch (fxt) {
 	case FX_ARPEGGIO:
@@ -232,14 +253,29 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 		break;
 
 	case FX_SETPAN:		/* Set pan */
-		xc->pan.val = fxp;
+		/* From OpenMPT PanOff.xm:
+		 * "Another chapter of weird FT2 bugs: Note-Off + Note Delay
+		 *  + Volume Column Panning = Panning effect is ignored."
+		 */
+		if (!HAS_QUIRK(QUIRK_FT2BUGS)		/* If not FT2 */
+		    || fnum == 0			/* or not vol column */
+		    || e->note != XMP_KEY_OFF		/* or not keyoff */
+		    || e->fxt != FX_EXTENDED		/* or not delay */
+		    || MSN(e->fxp) != EX_DELAY) {
+			xc->pan.val = fxp;
+			xc->pan.surround = 0;
+		}
 		break;
 	case FX_OFFSET:		/* Set sample offset */
+		EFFECT_MEMORY(fxp, xc->offset.memory);
 		SET(OFFSET);
-		if (fxp) {
-			xc->offset_val = xc->offset = fxp << 8;
-		} else {
-			xc->offset_val = xc->offset;
+		if (note) {
+			xc->offset.val &= xc->offset.val & ~0xffff;
+			xc->offset.val |= fxp << 8;
+			xc->offset.val2 = fxp << 8;
+		}
+		if (e->ins) {
+			xc->offset.val2 = fxp << 8;
 		}
 		break;
 	case FX_VOLSLIDE:	/* Volume slide */
@@ -282,16 +318,12 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 			xc->vol.memory = fxp;
 			h = MSN(fxp);
 			l = LSN(fxp);
-			if (HAS_QUIRK(QUIRK_VOLPDN)) {
-				if (fxp)
+			if (fxp) {
+				if (HAS_QUIRK(QUIRK_VOLPDN)) {
 					xc->vol.slide = l ? -l : h;
-			} else {
-				if (l == 0)
-					xc->vol.slide = h;
-				else if (h == 0)
-					xc->vol.slide = -l;
-				else
-					RESET(VOL_SLIDE);
+				} else {
+					xc->vol.slide = h ? h : -l;
+				}
 			}
 		}
 
@@ -312,12 +344,7 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 		if (fxp) {
 			h = MSN(fxp);
 			l = LSN(fxp);
-			if (l == 0)
-				xc->vol.slide2 = h;
-			else if (h == 0)
-				xc->vol.slide2 = -l;
-			else
-				RESET(VOL_SLIDE_2);
+			xc->vol.slide2 = h ? h : -l;
 		}		
 		break;
 	case FX_JUMP:		/* Order jump */
@@ -329,6 +356,9 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 	case FX_VOLSET:		/* Volume set */
 		SET(NEW_VOL);
 		xc->volume = fxp;
+		if (xc->split) {
+			p->xc_data[xc->pair].volume = xc->volume;
+		}
 		break;
 	case FX_BREAK:		/* Pattern break */
 		p->flow.pbreak = 1;
@@ -346,23 +376,27 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 		    EFFECT_MEMORY(fxp, xc->fine_porta.down_memory);
 		    goto fx_f_porta_dn;
 		case EX_GLISS:		/* Glissando toggle */
-			xc->gliss = fxp;
+			if (fxp) {
+				SET(GLISSANDO);
+			} else {
+				RESET(GLISSANDO);
+			}
 			break;
 		case EX_VIBRATO_WF:	/* Set vibrato waveform */
 			fxp &= 3;
-			if (HAS_QUIRK(QUIRK_S3MLFO) && fxp == 2)
-				fxp |= 0x10;
 			set_lfo_waveform(&xc->vibrato.lfo, fxp);
 			break;
 		case EX_FINETUNE:	/* Set finetune */
 			fxp <<= 4;
-			if (!HAS_QUIRK(QUIRK_XMFINE) || note > 0)
+			if (!HAS_QUIRK(QUIRK_FT2BUGS) || note > 0)
 				goto fx_finetune;
 			break;
 		case EX_PATTERN_LOOP:	/* Loop pattern */
 			if (fxp == 0) {
 				/* mark start of loop */
 				f->loop[chn].start = p->row;
+				if (HAS_QUIRK(QUIRK_FT2BUGS))
+				  p->flow.jumpline = p->row;
 			} else {
 				/* end of loop */
 				if (f->loop[chn].count) {
@@ -375,10 +409,8 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 							    p->row + 1;
 					}
 				} else {
-					if (f->loop[chn].start <= p->row) {
-						f->loop[chn].count = fxp;
-						f->loop_chn = ++chn;
-					}
+					f->loop[chn].count = fxp;
+					f->loop_chn = ++chn;
 				}
 			}
 			break;
@@ -440,6 +472,7 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 		SET(FINE_VOLS);
 		xc->vol.fslide = -fxp;
 		break;
+
 	case FX_F_PORTA_UP:	/* Fine portamento up */
 	    fx_f_porta_up:
 		if (fxp) {
@@ -462,18 +495,23 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 	case FX_S3M_SPEED:	/* Set S3M speed */
 		EFFECT_MEMORY_S3M(fxp);
 	    fx_s3m_speed:
-		if (fxp)
+		if (fxp) {
 			p->speed = fxp;
-		break;
-	case FX_S3M_BPM:	/* Set S3M BPM */
-            fx_s3m_bpm:
-		if (fxp >= 0x20) {
-			if (fxp < XMP_MIN_BPM)
-				fxp = XMP_MIN_BPM;
-			p->bpm = fxp;
-			p->frame_time = m->time_factor * m->rrate / p->bpm;
+#ifndef LIBXMP_CORE_PLAYER
+			p->st26_speed = 0;
+#endif
 		}
 		break;
+	case FX_S3M_BPM:	/* Set S3M BPM */
+	    fx_s3m_bpm: {
+		/* Lower time factor in MED allows lower BPM values */
+		int min_bpm = (int)(0.5 + m->time_factor * XMP_MIN_BPM / 10);
+		if (fxp < min_bpm)
+			fxp = min_bpm;
+		p->bpm = fxp;
+		p->frame_time = m->time_factor * m->rrate / p->bpm;
+		break;
+	}
 
 #ifndef LIBXMP_CORE_DISABLE_IT
 	case FX_IT_BPM:		/* Set IT BPM */
@@ -496,6 +534,33 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 			f->rowdelay_set = 1;
 		}
 		break;
+
+	/* From the OpenMPT VolColMemory.it test case:
+	 * "Volume column commands a, b, c and d (volume slide) share one
+	 *  effect memory, but it should not be shared with Dxy in the effect
+	 *  column. 
+	 */
+	case FX_VSLIDE_UP_2:	/* Fine volume slide up */
+		EFFECT_MEMORY(fxp, xc->vol.memory2);
+		SET(VOL_SLIDE_2);
+		xc->vol.slide2 = fxp;
+		break;
+	case FX_VSLIDE_DN_2:	/* Fine volume slide down */
+		EFFECT_MEMORY(fxp, xc->vol.memory2);
+		SET(VOL_SLIDE_2);
+		xc->vol.slide2 = -fxp;
+		break;
+	case FX_F_VSLIDE_UP_2:	/* Fine volume slide up */
+		EFFECT_MEMORY(fxp, xc->vol.memory2);
+		SET(FINE_VOLS_2);
+		xc->vol.fslide2 = fxp;
+		break;
+	case FX_F_VSLIDE_DN_2:	/* Fine volume slide down */
+		EFFECT_MEMORY(fxp, xc->vol.memory2);
+		SET(FINE_VOLS_2);
+		xc->vol.fslide2 = -fxp;
+		break;
+
 #endif
 
 	case FX_GLOBALVOL:	/* Set global volume */
@@ -521,11 +586,11 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 					xc->gvol.slide = 0;
 					xc->gvol.fslide = -l;
 				} else {
-					xc->gvol.slide = h - l;
+					xc->gvol.slide = h ? h : -l;
 					xc->gvol.fslide = 0;
 				}
 			} else {
-				xc->gvol.slide = h - l;
+				xc->gvol.slide = h ? h : -l;
 				xc->gvol.fslide = 0;
 			}
 		} else {
@@ -538,17 +603,33 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 		xc->keyoff = fxp + 1;
 		break;
 	case FX_ENVPOS:		/* Set envelope position */
-		/* FIXME: Add OpenMPT quirk */
+		/* From OpenMPT SetEnvPos.xm:
+		 * "When using the Lxx effect, Fasttracker 2 only sets the
+		 *  panning envelope position if the volume envelope’s sustain
+		 *  flag is set.
+		 */
+		if (HAS_QUIRK(QUIRK_FT2BUGS)) {
+			struct xmp_instrument *instrument;
+			instrument = get_instrument(ctx, xc->ins);
+			if (instrument != NULL) {
+				if (instrument->aei.flg & XMP_ENVELOPE_SUS) {
+					xc->p_idx = fxp;
+				}
+			}
+		} else {
+			xc->p_idx = fxp;
+		}
 		xc->v_idx = fxp;
 		xc->f_idx = fxp;
-		xc->p_idx = fxp;
 		break;
 	case FX_PANSLIDE:	/* Pan slide (XM) */
-		/* TODO: add memory */
+		EFFECT_MEMORY(fxp, xc->pan.memory);
 		SET(PAN_SLIDE);
-		if (fxp) {
-			xc->pan.slide = LSN(fxp) - MSN(fxp);
-		}
+		xc->pan.slide = LSN(fxp) - MSN(fxp);
+		break;
+	case FX_PANSL_NOMEM:	/* Pan slide (XM volume column) */
+		SET(PAN_SLIDE);
+		xc->pan.slide = LSN(fxp) - MSN(fxp);
 		break;
 
 #ifndef LIBXMP_CORE_DISABLE_IT
@@ -627,19 +708,18 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 				goto fx_trk_fvslide;
 			}
 		}
-		SET(TRK_VSLIDE);
 
+		SET(TRK_VSLIDE);
 		if (fxp) {
 			h = MSN(fxp);
 			l = LSN(fxp);
 
 			xc->trackvol.memory = fxp;
-			if (l == 0)
-				xc->trackvol.slide = h;
-			else if (h == 0)
-				xc->trackvol.slide = -l;
-			else
-				RESET(TRK_VSLIDE);
+			if (HAS_QUIRK(QUIRK_VOLPDN)) {
+				xc->trackvol.slide = l ? -l : h;
+			} else {
+				xc->trackvol.slide = h ? h : -l;
+			}
 		}
 
 		break;
@@ -675,13 +755,29 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 			virt_setnna(ctx, chn, XMP_INST_NNA_FADE);
 			break;
 		case 7:	/* Turn off volume envelope */
+			SET_PER(VENV_PAUSE);
 			break;
 		case 8:	/* Turn on volume envelope */
+			RESET_PER(VENV_PAUSE);
+			break;
+		case 9:	/* Turn off pan envelope */
+			SET_PER(PENV_PAUSE);
+			break;
+		case 0xa:	/* Turn on pan envelope */
+			RESET_PER(PENV_PAUSE);
+			break;
+		case 0xb:	/* Turn off pitch envelope */
+			SET_PER(FENV_PAUSE);
+			break;
+		case 0xc:	/* Turn on pitch envelope */
+			RESET_PER(FENV_PAUSE);
 			break;
 		}
 		break;
 	case FX_FLT_CUTOFF:
-		xc->filter.cutoff = fxp;
+		if (fxp < 0xfe || xc->filter.resonance > 0) {
+			xc->filter.cutoff = fxp;
+		}
 		break;
 	case FX_FLT_RESN:
 		xc->filter.resonance = fxp;
@@ -693,9 +789,34 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 	case FX_PANBRELLO_WF:	/* Panbrello waveform */
 		set_lfo_waveform(&xc->panbrello.lfo, fxp & 3);
 		break;
+	case FX_HIOFFSET:	/* High offset */
+		xc->offset.val &= 0xffff;
+		xc->offset.val |= fxp << 16;
+		break;
+	case FX_SURROUND:
+		xc->pan.surround = fxp;
+		break;
 #endif
 
 #ifndef LIBXMP_CORE_PLAYER
+	/* Saga Musix says:
+	 *
+	 * "When both nibbles of an Fxx command are set, SoundTracker 2.6
+	 * applies the both values alternatingly, first the high nibble,
+	 * then the low nibble on the next row, then the high nibble again...
+	 * If only the high nibble is set, it should act like if only the low
+	 * nibble is set (i.e. F30 is the same as F03).
+	 */
+	case FX_ICE_SPEED:
+		if (fxp) {
+			if (LSN(fxp)) {
+				p->st26_speed = (MSN(fxp) << 8) | LSN(fxp);
+			} else {
+				p->st26_speed = MSN(fxp);
+			}
+		}
+		break;
+
 	case FX_VOLSLIDE_UP:	/* Vol slide with uint8 arg */
 		if (HAS_QUIRK(QUIRK_FINEFX)) {
 			h = MSN(fxp);
@@ -729,12 +850,7 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 		if (fxp) {
 			h = MSN(fxp);
 			l = LSN(fxp);
-			if (l == 0)
-				xc->vol.fslide = h;
-			else if (h == 0)
-				xc->vol.fslide = -l;
-			else
-				RESET(FINE_VOLS);
+			xc->vol.fslide = h ? h : -l;
 		}		
 		break;
 	case FX_NSLIDE_DN:
@@ -824,8 +940,12 @@ void process_fx(struct context_data *ctx, struct channel_data *xc, int chn,
 		SET_LFO_NOTZERO(&xc->vibrato.lfo, LSN(fxp) << 3, MSN(fxp));
 		break;
 	case FX_SPEED_CP:	/* Set speed and ... */
-		if (fxp)
+		if (fxp) {
 			p->speed = fxp;
+#ifndef LIBXMP_CORE_PLAYER
+			p->st26_speed = 0;
+#endif
+		}
 		/* fall through */
 	case FX_PER_CANCEL:	/* Cancel persistent effects */
 		xc->per_flags = 0;

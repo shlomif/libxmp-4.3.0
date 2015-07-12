@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -83,6 +83,11 @@ static int get_main(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 	hio_read16l(f);		/* unknown - 0xff00 */
 	hio_read8(f);		/* unknown - 0x80 */
 
+	/* Sanity check */
+	if (mod->chn > 32) {
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -141,6 +146,11 @@ static int get_patt(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 	i = hio_read8(f);	/* pattern number */
 	len = hio_read32l(f);
 	
+	/* Sanity check */
+	if (i >= mod->pat || len <= 0) {
+		return -1;
+	}
+
 	rows = hio_read8(f) + 1;
 
 	if (pattern_tracks_alloc(mod, i, rows) < 0)

@@ -12,6 +12,7 @@ typedef struct {
 #define HIO_HANDLE_TYPE_FILE	0
 #define HIO_HANDLE_TYPE_MEMORY	1
 	int type;
+	long size;
 	union {
 		FILE *file;
 		MFILE *mem;
@@ -32,9 +33,8 @@ long	hio_tell	(HIO_HANDLE *);
 int	hio_eof		(HIO_HANDLE *);
 HIO_HANDLE *hio_open	(void *, char *);
 HIO_HANDLE *hio_open_mem  (void *, long);
-HIO_HANDLE *hio_open_fd	  (int, char *);
 HIO_HANDLE *hio_open_file (FILE *);
 int	hio_close	(HIO_HANDLE *);
-int	hio_stat	(HIO_HANDLE *, struct stat *);
+long	hio_size	(HIO_HANDLE *);
 
 #endif

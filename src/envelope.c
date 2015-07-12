@@ -1,5 +1,5 @@
-/* Extended Module Player core player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -25,22 +25,39 @@
 
 /* Envelope */
 
-int get_envelope(struct xmp_envelope *env, int x, int def, int *end)
+int check_envelope_end(struct xmp_envelope *env, int x)
+{
+	int16 *data = env->data;
+	int index;
+
+	if (~env->flg & XMP_ENVELOPE_ON || env->npt <= 0)
+		return 0;
+
+	index = (env->npt - 1) * 2;
+
+	/* last node */
+	if (x >= data[index] || index == 0) { 
+		if (~env->flg & XMP_ENVELOPE_LOOP) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+int get_envelope(struct xmp_envelope *env, int x, int def)
 {
 	int x1, x2, y1, y2;
 	int16 *data = env->data;
 	int index;
 
-	*end = 0;
-
-	if (~env->flg & XMP_ENVELOPE_ON || env->npt <= 0)
+	if (x < 0 || ~env->flg & XMP_ENVELOPE_ON || env->npt <= 0)
 		return def;
 
 	index = (env->npt - 1) * 2;
 
 	x1 = data[index];		/* last node */
 	if (x >= x1 || index == 0) { 
-		*end = 1;
 		return data[index + 1];
 	}
 
@@ -52,26 +69,58 @@ int get_envelope(struct xmp_envelope *env, int x, int def, int *end)
 	/* interpolate */
 	y1 = data[index + 1];
 	x2 = data[index + 2];
-
-	if (env->flg & XMP_ENVELOPE_LOOP && index == (env->lpe << 1)) {
-		index = (env->lps - 1) * 2;
-	}
-
 	y2 = data[index + 3];
 
-	return ((y2 - y1) * (x - x1) / (x2 - x1)) + y1;
+	return x2 == x1 ? y2 : ((y2 - y1) * (x - x1) / (x2 - x1)) + y1;
 }
 
+static int update_envelope_xm(struct xmp_envelope *env, int x, int release)
+{
+	int16 *data = env->data;
+	int has_loop, has_sus;
+	int lpe, lps, sus;
 
-int update_envelope(struct xmp_envelope *env, int x, int release, int sus_quirk)
+	has_loop = env->flg & XMP_ENVELOPE_LOOP;
+	has_sus = env->flg & XMP_ENVELOPE_SUS;
+
+	lps = env->lps << 1;
+	lpe = env->lpe << 1;
+	sus = env->sus << 1;
+
+	/* FT2 and IT envelopes behave in a different way regarding loops,
+	 * sustain and release. When the sustain point is at the end of the
+	 * envelope loop end and the key is released, FT2 escapes the loop
+	 * while IT runs another iteration. (See EnvLoops.xm in the OpenMPT
+	 * test cases.)
+	 */
+	if (has_loop && has_sus && sus == lpe) {
+		if (!release)
+			has_sus = 0;
+	}
+
+	/* If enabled, stay at the sustain point */
+	if (has_sus && !release) {
+		if (x >= data[sus]) {
+			x = data[sus];
+		}
+	}
+
+	/* Envelope loops */
+	if (has_loop && x >= data[lpe]) {
+		if (!(release && has_sus && sus == lpe))
+			x = data[lps];
+	}
+
+	return x;
+}
+
+#ifndef LIBXMP_CORE_DISABLE_IT
+
+static int update_envelope_it(struct xmp_envelope *env, int x, int release, int key_off)
 {
 	int16 *data = env->data;
 	int has_loop, has_sus;
 	int lpe, lps, sus, sue;
-
-	if (~env->flg & XMP_ENVELOPE_ON || env->npt <= 0) {
-		return x;
-	}
 
 	has_loop = env->flg & XMP_ENVELOPE_LOOP;
 	has_sus = env->flg & XMP_ENVELOPE_SUS;
@@ -81,42 +130,49 @@ int update_envelope(struct xmp_envelope *env, int x, int release, int sus_quirk)
 	sus = env->sus << 1;
 	sue = env->sue << 1;
 
-	/* FT2 and IT envelopes behave in a different way regarding loops,
-	 * sustain and release. When the sustain point is at the end of the
-	 * envelope loop end and the key is released, FT2 escapes the loop
-	 * while IT runs another iteration. (See EnvLoops.xm in the OpenMPT
-	 * test cases.)
-	 */
-	if (has_loop && has_sus && sus == lpe) {
-		if (sus_quirk && !release)
-			has_sus = 0;
-	}
-
-	if (env->flg & XMP_ENVELOPE_SLOOP) {
-		if (!release && has_sus) {
-			if (x == data[sue])
-				x = data[sus] - 1;
-		} else if (has_loop) {
-			if (x == data[lpe])
-				x = data[lps] - 1;
+	/* Release at the end of a sustain loop, run another loop */
+	if (has_sus && key_off && x == data[sue] + 1) {
+		x = data[sus];
+	} else
+	/* If enabled, stay in the sustain loop */
+	if (has_sus && !release) {
+		if (x == data[sue] + 1) {
+			x = data[sus];
 		}
-	} else {
-		if (!release && has_sus && x == data[sus]) {
-			/* stay in the sustain point */
-			x--;
-		}
-
-		if (has_loop && x == data[lpe]) {
-	    		if (!(release && has_sus && sus == lpe))
-				x = data[lps] - 1;
+	} else
+	/* Finally, execute the envelope loop */
+	if (has_loop) {
+		if (x > data[lpe]) {
+			x = data[lps];
 		}
 	}
 
+	return x;
+}
+
+#endif
+
+int update_envelope(struct xmp_envelope *env, int x, int release, int key_off, int it_env)
+{
 	if (x < 0xffff)	{	/* increment tick */
 		x++;
 	}
 
-	return x;
+	if (x < 0) {
+		return -1;
+	}
+
+	if (~env->flg & XMP_ENVELOPE_ON || env->npt <= 0) {
+		return x;
+	}
+
+#ifndef LIBXMP_CORE_DISABLE_IT
+	return it_env ?
+		update_envelope_it(env, x, release, key_off) :
+		update_envelope_xm(env, x, release);
+#else
+	return update_envelope_xm(env, x, release);
+#endif
 }
 
 

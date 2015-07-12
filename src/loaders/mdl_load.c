@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -233,16 +233,16 @@ static unsigned int get_bits(char i, uint8 **buf, int *len, struct bits *bits)
 	bits->b = readmem32l(*buf);
 	*buf += 4; *len -= 4;
 	bits->n = 32;
-	return 0;
     }
 
     x = bits->b & ((1 << i) - 1);	/* get i bits */
     bits->b >>= i;
     if ((bits->n -= i) <= 24) {
-	if (*len == 0)		/* FIXME: last few bits can't be consumed */
+	if (*len <= 0)		/* FIXME: last few bits can't be consumed */
 		return x;
 	bits->b |= readmem32l((*buf)++) << bits->n;
-	bits->n += 8; (*len)--;
+	bits->n += 8;
+	(*len)--;
     }
 
     return x;
@@ -271,21 +271,26 @@ static unsigned int get_bits(char i, uint8 **buf, int *len, struct bits *bits)
  *	xxx1s => byte = <xxx>; if s=1 then byte = byte xor 255
  */
 
-static void unpack_sample8(uint8 *t, uint8 *f, int len, int l)
+static int unpack_sample8(uint8 *t, uint8 *f, int len, int l)
 {
     int i, s;
     uint8 b, d;
     struct bits bits;
 
+    D_(D_INFO "unpack sample 8bit, len=%d", len);
     get_bits(0, &f, &len, &bits);
 
     for (i = b = d = 0; i < l; i++) {
+	/* Sanity check */
+        if (len < 0)
+            return -1;
+
 	s = get_bits(1, &f, &len, &bits);
 	if (get_bits(1, &f, &len, &bits)) {
 	    b = get_bits(3, &f, &len, &bits);
 	} else {
             b = 8;
-	    while (len >= 0 && !get_bits(1, &f, &len, &bits))
+	    while (len >= 0 && get_bits(1, &f, &len, &bits) == 0)
 		b += 16;
 	    b += get_bits(4, &f, &len, &bits);
 	}
@@ -296,6 +301,8 @@ static void unpack_sample8(uint8 *t, uint8 *f, int len, int l)
 	d += b;
 	*t++ = d;
     }
+
+    return 0;
 }
 
 /*
@@ -310,22 +317,27 @@ static void unpack_sample8(uint8 *t, uint8 *f, int len, int l)
  * Go on this way for the whole sample!
  */
 
-static void unpack_sample16(uint8 *t, uint8 *f, int len, int l)
+static int unpack_sample16(uint8 *t, uint8 *f, int len, int l)
 {
     int i, lo, s;
     uint8 b, d;
     struct bits bits;
 
+    D_(D_INFO "unpack sample 16bit, len=%d", len);
     get_bits(0, &f, &len, &bits);
 
     for (i = lo = b = d = 0; i < l; i++) {
+	/* Sanity check */
+        if (len < 0)
+            return -1;
+
 	lo = get_bits(8, &f, &len, &bits);
 	s = get_bits(1, &f, &len, &bits);
 	if (get_bits(1, &f, &len, &bits)) {
 	    b = get_bits(3, &f, &len, &bits);
 	} else {
             b = 8;
-	    while (len >= 0 && !get_bits (1, &f, &len, &bits))
+	    while (len >= 0 && get_bits(1, &f, &len, &bits) == 0)
 		b += 16;
 	    b += get_bits(4, &f, &len, &bits);
 	}
@@ -337,6 +349,8 @@ static void unpack_sample16(uint8 *t, uint8 *f, int len, int l)
 	*t++ = lo;
 	*t++ = d;
     }
+
+    return 0;
 }
 
 
@@ -357,6 +371,11 @@ static int get_chunk_in(struct module_data *m, int size, HIO_HANDLE *f, void *pa
     hio_read8(f);			/* gvol */
     mod->spd = hio_read8(f);
     mod->bpm = hio_read8(f);
+
+    /* Sanity check */
+    if (mod->len > 256 || mod->rst > 255) {
+	return -1;
+    }
 
     for (i = 0; i < 32; i++) {
 	uint8 chinfo = hio_read8(f);
@@ -380,6 +399,10 @@ static int get_chunk_pa(struct module_data *m, int size, HIO_HANDLE *f, void *pa
     int i, j, chn;
     int x;
 
+    /* Sanity check */
+    if (mod->pat != 0)
+        return -1;
+
     mod->pat = hio_read8(f);
 
     if ((mod->xxp = calloc(sizeof (struct xmp_pattern *), mod->pat)) == NULL)
@@ -397,6 +420,7 @@ static int get_chunk_pa(struct module_data *m, int size, HIO_HANDLE *f, void *pa
 	hio_seek(f, 16, SEEK_CUR);		/* Skip pattern name */
 	for (j = 0; j < chn; j++) {
 	    x = hio_read16l(f);
+
 	    if (j < mod->chn)
 		mod->xxp[i]->index[j] = x;
 	}
@@ -409,7 +433,11 @@ static int get_chunk_p0(struct module_data *m, int size, HIO_HANDLE *f, void *pa
 {
     struct xmp_module *mod = &m->mod;
     int i, j;
-    uint16 x16;
+    uint16 x;
+
+    /* Sanity check */
+    if (mod->pat != 0)
+        return -1;
 
     mod->pat = hio_read8(f);
 
@@ -424,9 +452,10 @@ static int get_chunk_p0(struct module_data *m, int size, HIO_HANDLE *f, void *pa
 	mod->xxp[i]->rows = 64;
 
 	for (j = 0; j < 32; j++) {
-	    x16 = hio_read16l(f);
+	    x = hio_read16l(f);
+
 	    if (j < mod->chn)
-		mod->xxp[i]->index[j] = x16;
+		mod->xxp[i]->index[j] = x;
 	}
     }
 
@@ -436,10 +465,23 @@ static int get_chunk_p0(struct module_data *m, int size, HIO_HANDLE *f, void *pa
 static int get_chunk_tr(struct module_data *m, int size, HIO_HANDLE *f, void *parm)
 {
     struct xmp_module *mod = &m->mod;
-    int i, j, k, row, len;
+    int i, j, k, row, len, max_trk;
     struct xmp_track *track;
 
     mod->trk = hio_read16l(f) + 1;
+
+    /* Sanity check */
+    max_trk = 0;
+    for (i = 0; i < mod->pat; i++) {
+	for (j = 0; j < mod->chn; j++) {
+	    if (max_trk < mod->xxp[i]->index[j])
+		max_trk = mod->xxp[i]->index[j];
+	}
+    }
+    if (max_trk >= mod->trk) {
+	return -1;
+    }
+
     if ((mod->xxt = calloc(sizeof (struct xmp_track *), mod->trk)) == NULL)
 	return -1;
 
@@ -464,22 +506,33 @@ static int get_chunk_tr(struct module_data *m, int size, HIO_HANDLE *f, void *pa
 	for (row = 0; len;) {
 	    struct xmp_event *ev = &track->event[row];
 
+	    /* Sanity check */
+	    if (row > 255) {
+		goto err2;
+	    }
+
 	    j = hio_read8(f);
+
 	    len--;
 	    switch (j & 0x03) {
 	    case 0:
 		row += j >> 2;
-	        /* ev = &track->event[row]; */
 		break;
 	    case 1:
+		/* Sanity check */
+		if (row + (j >> 2) > 255)
+		    goto err2;
+
 		for (k = 0; k <= (j >> 2); k++)
-		    memcpy (&ev[k], &ev[-1], sizeof (struct xmp_event));
+		    memcpy(&ev[k], &ev[-1], sizeof (struct xmp_event));
 		row += k - 1;
-	        /* ev = &track->event[row]; */
 		break;
 	    case 2:
-		memcpy (ev, &track->event[j >> 2],
-		    sizeof (struct xmp_event));
+		/* Sanity check */
+		if ((j >> 2) == row) {
+		    goto err2;
+		}
+		memcpy(ev, &track->event[j >> 2], sizeof (struct xmp_event));
 		break;
 	    case 3:
 		if (j & MDL_NOTE_FOLLOWS) {
@@ -770,20 +823,37 @@ static int get_chunk_sa(struct module_data *m, int size, HIO_HANDLE *f, void *pa
 	    break;
 	case 1: 
 	    len = hio_read32l(f);
+            /* Sanity check */
+            if (xxs->flg & XMP_SAMPLE_16BIT)
+                goto err2;
+            if (len <= 0 || len > 0x80000)  /* Max compressed sample size */
+                goto err2;
 	    if ((buf = malloc(len + 4)) == NULL)
 		goto err2;
-	    hio_read(buf, 1, len, f);
-	    unpack_sample8(smpbuf, buf, len, xxs->len);
+	    if (hio_read(buf, 1, len, f) != len)
+                goto err3;
+            if (unpack_sample8(smpbuf, buf, len, xxs->len) < 0)
+                goto err3;
 	    free(buf);
 	    break;
 	case 2:
 	    len = hio_read32l(f);
+            /* Sanity check */
+            if (~xxs->flg & XMP_SAMPLE_16BIT)
+                goto err2;
+            if (len <= 0 || len > MAX_SAMPLE_SIZE)
+                goto err2;
 	    if ((buf = malloc(len + 4)) == NULL)
 		goto err2;
-	    hio_read(buf, 1, len, f);
-	    unpack_sample16(smpbuf, buf, len, xxs->len);
+	    if (hio_read(buf, 1, len, f) != len)
+                goto err3;
+            if (unpack_sample16(smpbuf, buf, len, xxs->len) < 0)
+                goto err3;
 	    free(buf);
 	    break;
+	default:
+	    /* Sanity check */
+            goto err2;
 	}
 	
 	if (load_sample(m, NULL, SAMPLE_FLAG_NOLOAD, xxs, (char *)smpbuf) < 0)
@@ -793,7 +863,8 @@ static int get_chunk_sa(struct module_data *m, int size, HIO_HANDLE *f, void *pa
     }
 
     return 0;
-
+  err3:
+    free(buf);
   err2:
     free(smpbuf);
   err:

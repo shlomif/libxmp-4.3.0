@@ -1,9 +1,23 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
- * This file is part of the Extended Module Player and is distributed
- * under the terms of the GNU Lesser General Public License. See COPYING.LIB
- * for more information.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 #include "loader.h"
@@ -42,7 +56,7 @@ static int psm_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	uint8 buf[1024];
 	uint32 p_ord, p_chn, p_pat, p_ins;
 	uint32 p_smp[64];
-	int type, ver, mode;
+	int type, ver /*, mode*/;
  
 	LOAD_INIT();
 
@@ -51,26 +65,32 @@ static int psm_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	hio_read(buf, 1, 60, f);
 	strncpy(mod->name, (char *)buf, XMP_NAME_SIZE);
 
-	type = hio_read8(f);	/* song type */
+	type = hio_read8(f);		/* song type */
 	ver = hio_read8(f);		/* song version */
-	mode = hio_read8(f);	/* pattern version */
+	/*mode =*/ hio_read8(f);	/* pattern version */
 
-	if (type & 0x01)	/* song mode not supported */
+	if (type & 0x01)		/* song mode not supported */
 		return -1;
 
 	set_type(m, "Protracker Studio PSM %d.%02d", MSN(ver), LSN(ver));
 
 	mod->spd = hio_read8(f);
 	mod->bpm = hio_read8(f);
-	hio_read8(f);		/* master volume */
-	hio_read16l(f);		/* song length */
+	hio_read8(f);			/* master volume */
+	hio_read16l(f);			/* song length */
 	mod->len = hio_read16l(f);
 	mod->pat = hio_read16l(f);
 	mod->ins = hio_read16l(f);
-	hio_read16l(f);               /* ignore channels to play */
-	mod->chn = hio_read16l(f);    /* use channels to proceed */
+	hio_read16l(f);			/* ignore channels to play */
+	mod->chn = hio_read16l(f);	/* use channels to proceed */
 	mod->smp = mod->ins;
 	mod->trk = mod->pat * mod->chn;
+
+	/* Sanity check */
+	if (mod->len > 256 || mod->pat > 256 || mod->ins > 255 ||
+	    mod->chn > XMP_MAX_CHANNELS) {
+		return -1;
+        }
 
 	p_ord = hio_read32l(f);
 	p_chn = hio_read32l(f);

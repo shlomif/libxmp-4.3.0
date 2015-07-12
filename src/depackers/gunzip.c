@@ -1,5 +1,5 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * This file is part of the Extended Module Player and is distributed
  * under the terms of the GNU Lesser General Public License. See COPYING.LIB
@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include "common.h"
 #include "inflate.h"
+#include "depacker.h"
 #include "crc32.h"
 
 /* See RFC1952 for further information */
@@ -41,7 +42,12 @@ struct member {
 	uint8 os;
 };
 
-int decrunch_gzip(FILE *in, FILE *out)
+static int test_gzip(unsigned char *b)
+{
+	return b[0] == 31 && b[1] == 139;
+}
+
+static int decrunch_gzip(FILE *in, FILE *out)
 {
 	struct member member;
 	int val, c;
@@ -102,3 +108,7 @@ int decrunch_gzip(FILE *in, FILE *out)
 	return 0;
 }
 
+struct depacker gzip_depacker = {
+	test_gzip,
+	decrunch_gzip
+};

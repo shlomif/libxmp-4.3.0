@@ -1,5 +1,5 @@
-/* Extended Module Player core player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -116,11 +116,11 @@ int med_linear_bend(struct context_data *ctx, struct channel_data *xc)
 }
 
 
-void med_play_extras(struct context_data *ctx, struct channel_data *xc,
-			int chn, int t)
+void med_play_extras(struct context_data *ctx, struct channel_data *xc, int chn)
 {
 	struct module_data *m = &ctx->m;
 	struct player_data *p = &ctx->p;
+	struct xmp_module *mod = &m->mod;
 	struct med_module_extras *me;
 	struct med_channel_extras *ce;
 	struct med_instrument_extras *ie;
@@ -167,17 +167,20 @@ void med_play_extras(struct context_data *ctx, struct channel_data *xc,
 		return;
 	}
 
-	if (t == 0 && TEST(NEW_NOTE)) {
-		ce->arp = ce->aidx = 0;
+	if (p->frame == 0 && TEST(NEW_NOTE)) {
 		ce->period = xc->period;
 		if (TEST(NEW_INS)) {
+			ce->arp = ce->aidx = 0;
 			ce->vp = ce->vc = ce->vw = 0;
 			ce->wp = ce->wc = ce->ww = 0;
+			ce->env_wav = -1;
+			ce->env_idx = 0;
+			ce->flags &= ~MED_SYNTH_ENV_LOOP;
+			ce->vv = 0;
+			ce->wv = 0;
+			ce->vs = ie->vts;
+			ce->ws = ie->wts;
 		}
-		ce->vv = 0;
-		ce->wv = 0;
-		ce->vs = ie->vts;
-		ce->ws = ie->wts;
 	}
 
 	if (ce->vs > 0 && ce->vc-- == 0) {
@@ -189,6 +192,8 @@ void med_play_extras(struct context_data *ctx, struct channel_data *xc,
 		}
 
 		loop = jws = 0;
+
+		/* Volume commands */
 
 	    next_vt:
 		switch (b = VT) {
@@ -208,8 +213,11 @@ void med_play_extras(struct context_data *ctx, struct channel_data *xc,
 			jws = VT;
 			break;
 		case 0xf5:	/* EN2 */
+			ce->env_wav = VT;
+			ce->flags |= MED_SYNTH_ENV_LOOP;
+			break;
 		case 0xf4:	/* EN1 */
-			VT_SKIP;	/* Not implemented */
+			ce->env_wav = VT;
 			break;
 		case 0xf3:	/* CHU */
 			ce->vv = VT;
@@ -228,10 +236,27 @@ void med_play_extras(struct context_data *ctx, struct channel_data *xc,
 				ce->volume = b;
 		}
 
+	    skip_vol:
+
+		/* volume envelope */
+		if (ce->env_wav >= 0) {
+			int sid = mod->xxi[xc->ins].sub[ce->env_wav].sid;
+			struct xmp_sample *xxs = &mod->xxs[sid];
+			if (xxs->len == 0x80) {		/* sanity check */
+				ce->volume = ((int8)xxs->data[ce->env_idx] + 0x80) >> 2;
+				ce->env_idx++;
+
+				if (ce->env_idx >= 0x80) {
+					if (~ce->flags & MED_SYNTH_ENV_LOOP) {
+						ce->env_wav = -1;
+					}
+					ce->env_idx = 0;
+				}
+			}
+		}
+
 		ce->volume += ce->vv;
 		CLAMP(ce->volume, 0, 64);
-
-	    skip_vol:
 
 		if (ce->ww > 0) {
 			ce->ww--;
@@ -239,6 +264,8 @@ void med_play_extras(struct context_data *ctx, struct channel_data *xc,
 		}
 
 		loop = jvs = 0;
+
+		/* Waveform commands */
 
 	    next_wt:
 		switch (b = WT) {
@@ -299,11 +326,10 @@ void med_play_extras(struct context_data *ctx, struct channel_data *xc,
 				virt_setsmp(ctx, chn, xc->smp);
 			}
 		}
-		xc->period += ce->wv;
 
 	    skip_wav:
-		;
-		/* xc->period += ce->wv; */
+
+		xc->period += ce->wv;
 	}
 
 	if (jws) {

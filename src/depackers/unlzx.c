@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "common.h"
+#include "depacker.h"
 #include "crc32.h"
 
 #if 0
@@ -476,6 +477,7 @@ static int read_literal_table(struct LZXDecrData *decr)
     uint32 symbol, pos, count, fix, max_symbol;
     uint8 *src;
     int abort = 0;
+    int x;
 
     control = decr->control;
     shift = decr->shift;
@@ -652,7 +654,18 @@ static int read_literal_table(struct LZXDecrData *decr)
 			control += *src++ << (8 + shift);
 			control += *src++ << shift;
 		    }
-		    symbol = table_four[decr->literal_len[pos] + 17 - symbol];
+
+                    /* Sanity check */
+                    if (pos >= 768)
+                        return -1;
+
+                    x = decr->literal_len[pos] + 17 - symbol;
+
+                    /* Sanity check */
+                    if (x >= 34)
+                        return -1;
+
+		    symbol = table_four[x];
 
 		    while (pos < max_symbol && count--)
 			decr->literal_len[pos++] = symbol;
@@ -1072,14 +1085,19 @@ static int extract_archive(FILE * in_file, struct LZXDecrData *decr)
     return result;
 }
 
-int decrunch_lzx(FILE *f, FILE *fo)
+static int test_lzx(unsigned char *b)
+{
+	return memcmp(b, "LZX", 3) == 0;
+}
+
+static int decrunch_lzx(FILE *f, FILE *fo)
 {
 	struct LZXDecrData *decr;
 
 	if (fo == NULL)
 		return -1;
 
-	decr = malloc(sizeof(struct LZXDecrData));
+	decr = calloc(1, sizeof(struct LZXDecrData));
 	if (decr == NULL)
 		return -1;
 
@@ -1093,3 +1111,8 @@ int decrunch_lzx(FILE *f, FILE *fo)
 
 	return 0;
 }
+
+struct depacker lzx_depacker = {
+	test_lzx,
+	decrunch_lzx
+};

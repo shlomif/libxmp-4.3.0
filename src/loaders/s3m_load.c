@@ -1,5 +1,5 @@
-/* Extended Module Player format loaders
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+/* Extended Module Player
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -98,6 +98,10 @@ static int s3m_test(HIO_HANDLE *f, char *t, const int start)
     if (hio_read32b(f) != MAGIC_SCRM)
 	return -1;
 
+    hio_seek(f, start + 29, SEEK_SET);
+    if (hio_read8(f) != 0x10)
+	return -1;
+
     hio_seek(f, start + 0, SEEK_SET);
     read_title(f, t, 28);
 
@@ -152,6 +156,11 @@ static void xlat_fx(int c, struct xmp_event *e)
     uint8 h = MSN (e->fxp), l = LSN (e->fxp);
 
     switch (e->fxt = fx[e->fxt]) {
+    case FX_S3M_BPM:
+	if (e->fxp < 0x20) {
+	    e->fxp = e->fxt = 0;
+	}
+	break;
     case FX_S3M_EXTENDED:		/* Extended effects */
 	e->fxt = FX_EXTENDED;
 	switch (h) {
@@ -223,6 +232,15 @@ static int s3m_load(struct module_data *m, HIO_HANDLE *f, const int start)
     sfh.flags = hio_read16l(f);		/* Flags */
     sfh.version = hio_read16l(f);	/* Tracker ID and version */
     sfh.ffi = hio_read16l(f);		/* File format information */
+
+    /* Sanity check */
+    if (sfh.ffi != 1 && sfh.ffi != 2) {
+	goto err;
+    }
+    if (sfh.ordnum > 255 || sfh.insnum > 255 || sfh.patnum > 255) {
+	goto err;
+    }
+
     sfh.magic = hio_read32b(f);		/* 'SCRM' */
     sfh.gv = hio_read8(f);		/* Global volume */
     sfh.is = hio_read8(f);		/* Initial speed */
@@ -254,7 +272,7 @@ static int s3m_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
     copy_adjust(mod->name, sfh.name, 28);
 
-    pp_ins = calloc (2, sfh.insnum);
+    pp_ins = calloc(2, sfh.insnum);
     if (pp_ins == NULL)
 	goto err;
 
@@ -301,6 +319,8 @@ static int s3m_load(struct module_data *m, HIO_HANDLE *f, const int start)
     mod->pat++;
     if (mod->pat > sfh.patnum)
 	mod->pat = sfh.patnum;
+    if (mod->pat == 0)
+	goto err3;
 
     mod->trk = mod->pat * mod->chn;
     /* Load and convert header */
@@ -503,6 +523,14 @@ static int s3m_load(struct module_data *m, HIO_HANDLE *f, const int start)
 	hio_read(&sih.dosname, 13, 1, f);	/* DOS file name */
 	sih.memseg = hio_read16l(f);		/* Pointer to sample data */
 	sih.length = hio_read32l(f);		/* Length */
+
+	/* ST3 limit */
+	if ((sfh.version >> 12) == 1 && sih.length > 64000)
+		sih.length = 64000;
+
+	if (sih.length > MAX_SAMPLE_SIZE)
+		return -1;
+
 	sih.loopbeg = hio_read32l(f);		/* Loop begin */
 	sih.loopend = hio_read32l(f);		/* Loop end */
 	sih.vol = hio_read8(f);			/* Volume */
@@ -559,7 +587,7 @@ static int s3m_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 	hio_seek(f, start + 16L * sih.memseg, SEEK_SET);
 
-	ret = load_sample(m, f, (sfh.ffi - 1) * SAMPLE_FLAG_UNS, xxs, NULL);
+	ret = load_sample(m, f, sfh.ffi == 1 ? 0 : SAMPLE_FLAG_UNS, xxs, NULL);
 	if (ret < 0)
 		goto err3;
     }

@@ -33,7 +33,7 @@ typedef unsigned int uint32;
 #ifdef _MSC_VER				/* MSVC++6.0 has no long long */
 typedef signed __int64 int64;
 typedef unsigned __int64 uint64;
-#elif !defined B_BEOS_VERSION		/*BeOS has its own int64 definition */
+#elif !defined B_BEOS_VERSION		/* BeOS has its own int64 definition */
 typedef unsigned long long uint64;
 typedef signed long long int64;
 #endif
@@ -109,7 +109,7 @@ void __inline CLIB_DECL D_(const char *text, ...) { do {} while (0); }
 #define D_CRIT "\x1b[31m"
 #define D_WARN "\x1b[36m"
 #define D_(args...) do { \
-	printf("\x1b[33m%s \x1b[37m[%s:%d] " D_INFO, __PRETTY_FUNCTION__, \
+	printf("\x1b[33m%s \x1b[37m[%s:%d] " D_INFO, __FUNCTION__, \
 		__FILE__, __LINE__); printf (args); printf ("\x1b[0m\n"); \
 	} while (0)
 #else
@@ -117,14 +117,6 @@ void __inline CLIB_DECL D_(const char *text, ...) { do {} while (0); }
 #endif
 
 #endif	/* !_MSC_VER */
-
-#ifdef HAVE_STRLCPY
-#define strncpy strlcpy
-#endif
-
-#ifdef HAVE_STRLCAT
-#define strncat strlcat
-#endif
 
 #ifdef _MSC_VER
 #define dup _dup
@@ -142,8 +134,7 @@ void __inline CLIB_DECL D_(const char *text, ...) { do {} while (0); }
 /* Quirks */
 #define QUIRK_S3MLOOP	(1 << 0)	/* S3M loop mode */
 #define QUIRK_ENVFADE	(1 << 1)	/* Fade at end of envelope */
-#define QUIRK_INVLOOP	(1 << 2)	/* Enable effect EF invert loop */
-#define QUIRK_FUNKIT	(1 << 3)	/* Enable effect EF funk it */
+#define QUIRK_PROTRACK	(1 << 2)	/* Use Protracker-specific quirks */
 #define QUIRK_ST3GVOL	(1 << 4)	/* ST 3 weird global volume effect */
 #define QUIRK_FINEFX	(1 << 5)	/* Enable 0xf/0xe for fine effects */
 #define QUIRK_VSALL	(1 << 6)	/* Volume slides in all frames */
@@ -163,25 +154,25 @@ void __inline CLIB_DECL D_(const char *text, ...) { do {} while (0); }
 #define QUIRK_VIBALL	(1 << 20)	/* Vibrato in all frames */
 #define QUIRK_VIBINV	(1 << 21)	/* Vibrato has inverse waveform */
 #define QUIRK_PRENV	(1 << 22)	/* Portamento resets envelope & fade */
-#define QUIRK_S3MLFO	(1 << 23)	/* S3M-style LFO waveforms */
+#define QUIRK_ITOLDFX	(1 << 23)	/* IT old effects mode */
 #define QUIRK_S3MRTG	(1 << 24)	/* S3M-style retrig when count == 0 */
 #define QUIRK_RTDELAY	(1 << 25)	/* Delay effect retrigs instrument */
-#define QUIRK_MLKDLY	(1 << 26)	/* MilkyTracker-style delay effect */
-#define QUIRK_ENVSUS	(1 << 27)	/* Key release jumps to sus point */
+#define QUIRK_FT2BUGS	(1 << 26)	/* FT2 bug compatibility */
+/*#define QUIRK_ENVSUS	(1 << 27)*/	/* Key release jumps to sus point */
 #define QUIRK_S3MPMEM	(1 << 28)	/* S3M-style parameter memory */
-#define QUIRK_XMFINE	(1 << 29)	/* XM-style fine tune */
+/*#define QUIRK_XMFINE	(1 << 29)*/	/* XM-style fine tune */
+#define QUIRK_RSTCHN	(1 << 30)	/* Reset channel on sample end */
 
 #define HAS_QUIRK(x)	(m->quirk & (x))
 
 
 /* Format quirks */
 #define QUIRKS_ST3		(QUIRK_S3MLOOP | QUIRK_VOLPDN | QUIRK_FINEFX | \
-				 QUIRK_S3MPMEM | QUIRK_S3MRTG | QUIRK_S3MLFO )
-#define QUIRKS_FT2		(QUIRK_RTDELAY | QUIRK_FINEFX | QUIRK_ENVSUS | \
-				 QUIRK_XMFINE  )
+				 QUIRK_S3MPMEM | QUIRK_S3MRTG )
+#define QUIRKS_FT2		(QUIRK_RTDELAY | QUIRK_FINEFX )
 #define QUIRKS_IT		(QUIRK_S3MLOOP | QUIRK_FINEFX | QUIRK_VIBALL | \
 				 QUIRK_ENVFADE | QUIRK_ITVPOR | QUIRK_KEYOFF | \
-				 QUIRK_VIRTUAL | QUIRK_FILTER | QUIRK_S3MLFO | \
+				 QUIRK_VIRTUAL | QUIRK_FILTER | QUIRK_RSTCHN | \
 				 QUIRK_IGSTPOR | QUIRK_S3MRTG )
 
 /* DSP effects */
@@ -196,6 +187,8 @@ void __inline CLIB_DECL D_(const char *text, ...) { do {} while (0); }
 #define MED_TIME_FACTOR		2.64
 
 #define MAX_SEQUENCES		16
+#define MAX_SAMPLE_SIZE		0x10000000
+#define MAX_SAMPLES		1024
 
 struct ord_data {
 	int speed;
@@ -203,6 +196,9 @@ struct ord_data {
 	int gvl;
 	int time;
 	int start_row;
+#ifndef LIBXMP_CORE_PLAYER
+	int st26_speed;
+#endif
 };
 
 
@@ -231,6 +227,7 @@ struct module_data {
 	int c4rate;			/* C4 replay rate */
 	int volbase;			/* Volume base */
 	int gvolbase;			/* Global volume base */
+	int gvol;			/* Global volume */
 	int *vol_table;			/* Volume translation table */
 	int quirk;			/* player quirks */
 #define READ_EVENT_MOD	0
@@ -281,7 +278,6 @@ struct player_data {
 		int pbreak;
 		int jump;
 		int delay;
-		int skip_fetch;		/* To emulate delay + break quirk */
 		int jumpline;
 		int loop_chn;
 	
@@ -329,6 +325,11 @@ struct player_data {
 		int in_size;
 		char *in_buffer;
 	} buffer_data;
+
+#ifndef LIBXMP_CORE_PLAYER
+	int st26_speed;			/* For IceTracker speed effect */
+#endif
+
 };
 
 struct mixer_data {
@@ -385,11 +386,6 @@ uint32	readmem24l		(uint8 *);
 uint32	readmem24b		(uint8 *);
 uint32	readmem32l		(uint8 *);
 uint32	readmem32b		(uint8 *);
-
-int	get_temp_dir		(char *, int);
-#ifdef WIN32
-int	mkstemp			(char *);
-#endif
 
 struct xmp_instrument *get_instrument(struct context_data *, int);
 struct xmp_sample *get_sample(struct context_data *, int);

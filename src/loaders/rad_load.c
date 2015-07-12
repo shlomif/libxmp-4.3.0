@@ -1,9 +1,23 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
- * This file is part of the Extended Module Player and is distributed
- * under the terms of the GNU Lesser General Public License. See COPYING.LIB
- * for more information.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 #include "loader.h"
@@ -93,7 +107,16 @@ static int rad_load(struct module_data *m, HIO_HANDLE *f, const int start)
 		return -1;
 
 	while ((b = hio_read8(f)) != 0) {
-		hio_read(sid, 1, 11, f);
+
+		/* Sanity check */
+		if (b > mod->ins || mod->xxs[b - 1].data != NULL) {
+			return -1;
+		}
+
+		if (hio_read(sid, 1, 11, f) != 11) {
+			return -1;
+		}
+
 		if (load_sample(m, f, SAMPLE_FLAG_ADLIB | SAMPLE_FLAG_HSC,
 					&mod->xxs[b - 1], (char *)sid) < 0) {
 			return -1;
@@ -149,13 +172,15 @@ static int rad_load(struct module_data *m, HIO_HANDLE *f, const int start)
 
 			if ((r & 0x7f) >= 64) {
 				D_(D_CRIT "** Whoops! row = %d\n", r);
+				return -1;
 			}
 
 			do {
 				c = hio_read8(f);	/* Channel number */
 
-				if ((c & 0x7f) >= mod->chn) {
-					D_(D_CRIT "** Whoops! channel = %d\n", c);
+				/* Sanity check */
+				if ((c & 0x7f) >= mod->chn || (r & 0x7f) >= 64) {
+					return -1;
 				}
 
 				event = &EVENT(i, c & 0x7f, r & 0x7f);

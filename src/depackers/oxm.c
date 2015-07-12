@@ -1,5 +1,5 @@
 /* Extended Module Player
- * Copyright (C) 1996-2014 Claudio Matsuoka and Hipolito Carraro Jr
+ * Copyright (C) 1996-2015 Claudio Matsuoka and Hipolito Carraro Jr
  *
  * This file is part of the Extended Module Player and is distributed
  * under the terms of the GNU Lesser General Public License. See COPYING.LIB
@@ -11,6 +11,7 @@
 #include <string.h>
 #include "vorbis.h"
 #include "common.h"
+#include "depacker.h"
 
 #define MAGIC_OGGS	0x4f676753
 
@@ -89,8 +90,13 @@ static char *oggdec(FILE *f, int len, int res, int *newlen)
 	int i, n, ch;
 	/*int size;*/
 	uint8 *data, *pcm;
-	int16 *pcm16;
+	int16 *pcm16 = NULL;
 	uint32 id;
+
+	/* Sanity check */
+	if (len < 4) {
+		return NULL;
+	}
 
 	/*size =*/ read32l(f);
 	id = read32b(f);
@@ -110,8 +116,10 @@ static char *oggdec(FILE *f, int len, int res, int *newlen)
 	n = stb_vorbis_decode_memory(data, len, &ch, &pcm16);
 	free(data);
 
-	if (n <= 0)
+	if (n <= 0) {
+		free(pcm16);
 		return NULL;
+	}
 
 	pcm = (uint8 *)pcm16;
 
@@ -142,11 +150,11 @@ static char *oggdec(FILE *f, int len, int res, int *newlen)
 	return (char *)pcm;
 }
 
-int decrunch_oxm(FILE *f, FILE *fo)
+static int decrunch_oxm(FILE *f, FILE *fo)
 {
 	int i, j, pos;
 	int hlen, npat, len, plen;
-	int nins, nsmp;
+	int nins, nsmp, size;
 	uint32 ilen;
 	uint8 buf[1024];
 	struct xm_instrument xi[256];
@@ -174,25 +182,40 @@ int decrunch_oxm(FILE *f, FILE *fo)
 
 	for (i = 0; i < nins; i++) {
 		ilen = read32l(f);
-		if (ilen > 1024)
+		if (ilen > 1024) {
+			D_(D_CRIT "ilen=%d\n", ilen);
 			return -1;
+		}
 		fseek(f, -4, SEEK_CUR);
 		fread(buf, ilen, 1, f);		/* instrument header */
 		buf[26] = 0;
 		fwrite(buf, ilen, 1, fo);
 		nsmp = readmem16l(buf + 27);
+		size = readmem32l(buf + 29);
 
-		if (nsmp == 0)
+		if (nsmp == 0) {
 			continue;
+		}
+
+		/* Sanity check */
+		if (nsmp > 0x10 || (nsmp > 0 && size > 0x100)) {
+			D_(D_CRIT "Sanity check: nsmp=%d size=%d", nsmp, size);
+			return -1;
+		}
 
 		/* Read sample headers */
 		for (j = 0; j < nsmp; j++) {
 			xi[j].len = read32l(f);
+			if (xi[j].len > MAX_SAMPLE_SIZE) {
+				D_(D_CRIT "sample %d len = %d", j, xi[j].len);
+				return -1;
+			}
 			fread(xi[j].buf, 1, 36, f);
 		}
 
 		/* Read samples */
 		for (j = 0; j < nsmp; j++) {
+			D_(D_INFO "sample=%d len=%d\n", j, xi[j].len);
 			if (xi[j].len > 0) {
 				int res = 8;
 				if (xi[j].buf[10] & 0x10)
@@ -200,8 +223,9 @@ int decrunch_oxm(FILE *f, FILE *fo)
 				pcm[j] = oggdec(f, xi[j].len, res, &newlen);
 				xi[j].len = newlen;
 
-				if (pcm[j] == NULL)
+				if (pcm[j] == NULL) {
 					return -1;
+				}
 			}
 		}
 
@@ -222,3 +246,8 @@ int decrunch_oxm(FILE *f, FILE *fo)
 
 	return 0;
 }
+
+struct depacker oxm_depacker = {
+	NULL,
+	decrunch_oxm
+};

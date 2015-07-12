@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <string.h>
 #include "common.h"
+#include "depacker.h"
 
 #define MMCMP_COMP	0x0001
 #define MMCMP_DELTA	0x0002
@@ -242,7 +243,12 @@ static void block_unpack_8bit(struct block *block, struct sub_block *sub,
 	}
 }
 
-int decrunch_mmcmp(FILE *in, FILE *out)
+static int test_mmcmp(unsigned char *b)
+{
+	return memcmp(b, "ziRCONia", 8) == 0;
+}
+
+static int decrunch_mmcmp(FILE *in, FILE *out)
 {
 	struct header h;
 	uint32 *table;
@@ -250,11 +256,11 @@ int decrunch_mmcmp(FILE *in, FILE *out)
 
 	/* Read file header */
 	if (read32l(in) != 0x4352697A)		/* ziRC */
-		return -1;
+		goto err;
 	if (read32l(in) != 0x61694e4f)		/* ONia */
-		return -1;
+		goto err;
 	if (read16l(in) < 14)			/* header size */
-		return -1;
+		goto err;
 
 	/* Read header */
 	h.version = read16l(in);
@@ -265,13 +271,13 @@ int decrunch_mmcmp(FILE *in, FILE *out)
 	h.fmt_comp = read8(in);
 
 	if (h.nblocks == 0)
-		return -1;
+		goto err;
 
 	/* Block table */
 	fseek(in, h.blktable, SEEK_SET);
 	table = malloc(h.nblocks * 4);
 	if (table == NULL)
-		return -1;
+		goto err;
 
 	for (i = 0; i < h.nblocks; i++) {
 		table[i] = read32l(in);
@@ -290,13 +296,39 @@ int decrunch_mmcmp(FILE *in, FILE *out)
 		block.tt_entries = read16l(in);
 		block.num_bits   = read16l(in);
 
+                /* Sanity check */
+		if (block.unpk_size <= 0 || block.pk_size <= 0)
+			goto err2;
+		if (block.tt_entries < 0 || block.pk_size <= block.tt_entries)
+			goto err2;
+		if (block.sub_blk <= 0)
+			goto err2;
+		if (block.flags & MMCMP_COMP) {
+			if (block.flags & MMCMP_16BIT) {
+				if (block.num_bits >= 16) {
+					goto err2;
+				}
+			} else {
+				if (block.num_bits >= 8) {
+					goto err2;
+				}
+			}
+		}
+
 		sub_block = malloc(block.sub_blk * sizeof (struct sub_block));
 		if (sub_block == NULL)
-			goto err;
+			goto err2;
 
 		for (j = 0; j < block.sub_blk; j++) {
 			sub_block[j].unpk_pos  = read32l(in);
 			sub_block[j].unpk_size = read32l(in);
+
+	                /* Sanity check */
+			if (sub_block[j].unpk_pos < 0 ||
+			    sub_block[j].unpk_size < 0) {
+				free(sub_block);
+				goto err2;
+			}
 		}
 
 		block.tt_entries += ftell(in);
@@ -318,7 +350,13 @@ int decrunch_mmcmp(FILE *in, FILE *out)
 	free(table);
 	return 0;
 
-    err:
+    err2:
 	free(table);
+    err:
 	return -1;
 }
+
+struct depacker mmcmp_depacker = {
+	test_mmcmp,
+	decrunch_mmcmp
+};
